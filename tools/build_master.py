@@ -34,6 +34,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 import layout
+import org
 import research
 import staff
 import textfmt
@@ -369,6 +370,58 @@ def load_press(theme_dir):
                              medio=text(a.select_one(".press-article__source")),
                              descripcion=text(a.select_one(".press-article__byline")), url=a.get("href")))
     return awards, articles
+
+
+def load_legal(theme_dir):
+    path = os.path.join(theme_dir, "template-parts", "legal", "aviso-legal.php")
+    if not os.path.exists(path):
+        return {}
+    t = text(read_html(path))
+    out = {}
+    m = re.search(r"C\.?I\.?F\.?\s*([A-Z]\d{8})", t)
+    if m:
+        out["cif"] = m.group(1)
+    m = re.search(r"domicilio social en (.+?), C\.?I\.?F", t)
+    if m:
+        out["domicilio"] = m.group(1).strip()
+    m = re.search(r"inscrita en el (Registro Mercantil de [A-ZÁÉÍÓÚa-záéíóú ]+)", t)
+    if m:
+        out["registro"] = m.group(1).strip()
+    return out
+
+
+def load_contact(theme_dir):
+    soup = read_html(os.path.join(theme_dir, "page-templates", "page-contact.php"))
+    offices = []
+    for o in soup.select(".contact-office"):
+        parts = [x for x in (text(e) for e in o.find_all(["span", "p", "div", "h3", "h4"])) if x]
+        parts = list(dict.fromkeys(p for p in parts if not re.fullmatch(r"\d{2}", p)))
+        city = parts[0] if parts else None
+        addr = next((p for p in parts[1:] if p != city), None)
+        offices.append(dict(oficina=city, direccion=addr))
+    page = text(soup)
+    horario = re.search(r"Horario\s+(.+?\d{1,2}:\d{2}\s*[–-]\s*\d{1,2}:\d{2})", page)
+    idiomas = re.search(r"Idiomas\s+([A-Z]{2}(?:\s*·\s*[A-Z]{2})+)", page)
+    return dict(oficinas=offices, horario=horario.group(1) if horario else None,
+                idiomas=idiomas.group(1) if idiomas else None)
+
+
+def load_services(theme_dir):
+    soup = read_html(os.path.join(theme_dir, "page-templates", "page-services.php"))
+    rows = []
+    for art in soup.select("article.service"):
+        blocks = {}
+        for b in art.select(".service__block"):
+            label = text(b.select_one(".service__block-label"))
+            items = [text(i) for i in b.select("li, .service__tag")]
+            blocks[label] = ", ".join(items)
+        rows.append(dict(num=text(art.select_one(".service__num")), servicio=text(art.select_one(".service__title")),
+                         descripcion=text(art.select_one(".service__desc")), bloques=blocks,
+                         ejemplo=re.sub(r"^Ejemplo ejecutado:\s*", "", text(art.select_one(".service__note")) or "") or None))
+    for r in rows:
+        r["b0"] = "; ".join(v for l, v in r["bloques"].items() if l.lower().startswith("alcance") and v) or None
+        r["b1"] = "; ".join(v for l, v in r["bloques"].items() if not l.lower().startswith("alcance") and v) or None
+    return rows, ["Alcance", "Formatos y tipos"]
 
 
 def inventory_assets(theme_dir):
@@ -815,18 +868,22 @@ def consolidate(theme, internals, birthdays, src, resolver, research_rows):
 # ─────────────────────────── escritura ───────────────────────────
 
 SH = dict(idx="00_Índice", res="01_Resumen", agencia="02_Agencia", cifras="03_Cifras", crono="04_Cronología",
-          equipo="05_Equipo", p_staff="06_Personal_Staff", p_creadores="07_Personal_Creadores", creadores="08_Creadores",
-          plataformas="09_Plataformas", audiencia="10_Audiencia", campanas="11_Campañas_Creador", marcas="12_Marcas",
-          portafolio="13_Portafolio", prensa="14_Prensa_Premios")
+          servicios="05_Servicios", oficinas="06_Oficinas", equipo="07_Equipo", organigrama="08_Organigrama",
+          p_staff="09_Personal_Staff", p_creadores="10_Personal_Creadores", creadores="11_Creadores",
+          contratos="12_Contratos", rates="13_Rate_Card", plataformas="14_Plataformas", audiencia="15_Audiencia",
+          campanas="16_Campañas_Creador", clientes="17_Clientes", registro="18_Campañas", marcas="19_Marcas",
+          portafolio="20_Portafolio", prensa="21_Prensa_Premios")
 
 DESCRIPTIONS = dict(res="Conteos generales", agencia="Ficha corporativa", cifras="Cifras actuales de la agencia",
-                    crono="Hitos de 2019 a hoy", equipo="Equipo actual",
+                    crono="Hitos de 2019 a hoy", servicios="Servicios, alcance y formatos", oficinas="Oficinas",
+                    equipo="Equipo actual, cuentas y contacto", organigrama="Estructura por cuenta y vertical",
                     p_staff="Cumpleaños, antigüedad y aniversarios del equipo",
                     p_creadores="Cumpleaños y antigüedad en MCR de los creadores", creadores="Roster completo",
+                    contratos="Contratos de creadores", rates="Tarifas por creador y formato",
                     plataformas="Cuentas por plataforma", audiencia="Audiencia por país, idioma y género",
-                    campanas="Historial de campañas por creador", marcas="Marcas, clientes y empresa matriz",
+                    campanas="Historial de campañas por creador", clientes="Clientes y contactos",
+                    registro="Registro de campañas", marcas="Marcas, clientes y empresa matriz",
                     portafolio="Casos publicados", prensa="Prensa, premios y presencia institucional")
-
 
 def cols(*pairs):
     return list(pairs)
@@ -857,6 +914,8 @@ def shape(ctx):
         c["campana"] = textfmt.sentence(c["campana"], own + keep)
     for t in ctx["team"]:
         t["nombre"] = textfmt.proper_name(t["nombre"])
+    for r in ctx["org"]:
+        r["persona"] = textfmt.proper_name(r["persona"])
     for r in ctx["staff_personal"]:
         r["nombre"] = textfmt.proper_name(r["nombre"])
     for r in ctx["creator_personal"]:
@@ -902,15 +961,54 @@ def write_book(out, ctx):
         entries.append((SH[key_], DESCRIPTIONS[key_], len(rows)))
         return ws
 
-    add("agencia", "Agencia", cols(("campo", "Campo"), ("valor", "Valor")), ctx["agency"],
+    agency = list(ctx["agency"])
+    legal, contact = ctx["legal"], ctx["contact"]
+    pos = next((i for i, r in enumerate(agency) if r["campo"] == "Entidad legal"), 0) + 1
+    extra = [dict(campo="CIF", valor=legal.get("cif")), dict(campo="Domicilio social", valor=legal.get("domicilio")),
+             dict(campo="Registro", valor=legal.get("registro"))]
+    agency[pos:pos] = [e for e in extra if e["valor"]]
+    for campo, valor in (("Horario", contact.get("horario")), ("Idiomas", contact.get("idiomas"))):
+        if valor:
+            agency.append(dict(campo=campo, valor=valor))
+    agency = [r for r in agency if r["campo"] != "Dirección Barcelona"]
+    add("agencia", "Agencia", cols(("campo", "Campo"), ("valor", "Valor")), agency,
         widths=dict(campo=32, valor=100), wrap_cols=("valor",), freeze_cols=0)
     add("cifras", "Cifras", cols(("metrica", "Métrica"), ("valor", "Valor")), current_figures(ctx),
         widths=dict(metrica=36, valor=52), int_cols=("valor",), freeze_cols=0)
     add("crono", "Cronología", cols(("fecha_txt", "Fecha"), ("hito", "Hito"), ("categoria", "Categoría")),
         ctx["timeline"], widths=dict(fecha_txt=14, hito=96, categoria=16), wrap_cols=("hito",), freeze_cols=0)
-    add("equipo", "Equipo", cols(("person_id", "ID"), ("nombre", "Nombre"), ("cargo", "Cargo"), ("area", "Área"),
-                                 ("nivel_org", "Nivel")),
-        ctx["team"], widths=dict(person_id=8, nombre=26, cargo=40, area=26, nivel_org=14), freeze_cols=0)
+    srv_rows, srv_labels = ctx["services"]
+    add("servicios", "Servicios",
+        cols(("num", "N.º"), ("servicio", "Servicio"), ("descripcion", "Descripción"),
+             *[(f"b{i}", textfmt.sentence(l)) for i, l in enumerate(srv_labels)], ("ejemplo", "Ejemplo ejecutado")),
+        srv_rows, widths=dict(num=6, servicio=30, descripcion=80, ejemplo=50,
+                              **{f"b{i}": 44 for i in range(len(srv_labels))}),
+        wrap_cols=("descripcion", "ejemplo") + tuple(f"b{i}" for i in range(len(srv_labels))), freeze_cols=0)
+    office_rows = []
+    for o in ctx["contact"]["oficinas"]:
+        country = {"Barcelona": "España", "Madrid": "España", "Ciudad de México": "México", "São Paulo": "Brasil"}.get(o["oficina"])
+        addr = o["direccion"]
+        if addr and addr.replace(",", "").strip() in (f"{o['oficina']} {country}", o["oficina"]):
+            addr = None
+        office_rows.append(dict(oficina=o["oficina"], pais=country, direccion=addr))
+    add("oficinas", "Oficinas",
+        cols(("oficina", "Oficina"), ("pais", "País"), ("direccion", "Dirección"), ("responsable", "Responsable"),
+             ("telefono", "Teléfono"), ("correo", "Correo")),
+        office_rows, widths=dict(oficina=20, pais=14, direccion=56, responsable=26, telefono=18, correo=28), freeze_cols=0)
+    add("equipo", "Equipo",
+        cols(("person_id", "ID"), ("nombre", "Nombre"), ("cargo", "Cargo"), ("area", "Área"), ("cuentas", "Cuentas"),
+             ("roles_cuenta", "Rol en la cuenta"), ("lidera", "Lidera"), ("modalidad", "Modalidad"),
+             ("junta", "Junta directiva"), ("correo", "Correo"), ("telefono", "Teléfono"), ("oficina", "Oficina"),
+             ("pais", "País"), ("reporta_a", "Reporta a")),
+        ctx["team"], widths=dict(person_id=8, nombre=24, cargo=34, area=22, cuentas=40, roles_cuenta=36, lidera=16,
+                                 modalidad=16, junta=16, correo=28, telefono=16, oficina=18, pais=12, reporta_a=22),
+        lists=dict(oficina=["Barcelona", "Madrid", "Ciudad de México", "São Paulo", "Remoto"]))
+    add("organigrama", "Organigrama",
+        cols(("bloque", "Bloque"), ("cuenta", "Cuenta / área"), ("vertical", "Vertical"), ("person_id", "ID"),
+             ("persona", "Persona"), ("rol", "Rol"), ("lidera", "Lidera"), ("modalidad", "Modalidad"),
+             ("detalle", "Detalle")),
+        ctx["org"], widths=dict(bloque=20, cuenta=20, vertical=30, person_id=8, persona=24, rol=34, lidera=10,
+                                modalidad=14, detalle=40), center_cols=("lidera",), freeze_cols=0)
     for key_, title, columns, rows in (("p_staff", "Información personal · staff", staff.STAFF_PERSONAL_COLS,
                                         ctx["staff_personal"]),
                                        ("p_creadores", "Información personal · creadores", staff.CREATOR_PERSONAL_COLS,
@@ -918,7 +1016,8 @@ def write_book(out, ctx):
         ws = add(key_, title, [(f, lab) for f, lab, _ in columns], rows,
                  widths=dict(person_id=14, nombre=26, nombre_real=28, cargo=32, notas=36, antiguedad=16,
                              precision=16, proximo_cumple=14, proximo_aniversario=14, fecha_ingreso=14))
-        staff.finish_personal_sheet(ws, columns, len(rows))
+        staff.finish_personal_sheet(ws, columns, len(rows),
+                                    signing_lookup=(SH["contratos"], "A", "D") if key_ == "p_creadores" else None)
     add("creadores", "Creadores", ctx["creator_cols"], ctx["creators"],
         widths=dict(creator_id=16, nombre_publico=20, variaciones=22, nombre_real=28, categorias=26, bio=70,
                     campana_vigente=36, marcas_frecuentes=40, correo=30, otras_cuentas=30, notas_internas=36,
@@ -927,6 +1026,23 @@ def write_book(out, ctx):
         int_cols=tuple(f"{p}_seguidores" for p in ("youtube", "tiktok", "instagram", "twitch", "x", "kick"))
         + ("alcance_total", "youtube_promedio_views"),
         pct_cols=("youtube_view_rate_pct",), center_cols=("tier", "en_web", "cumple_dia", "cumple_mes", "media_kit"))
+    base = [dict(creator_id=c["creator_id"], creador=c["nombre_publico"], tier=c["tier"],
+                 plataforma_principal=c["plataforma_principal"]) for c in ctx["creators"]]
+    add("contratos", "Contratos",
+        cols(("creator_id", "ID"), ("creador", "Creador"), ("tier", "Tier"), ("firma", "Fecha de firma"),
+             ("exclusividad", "Exclusividad"), ("vencimiento", "Vencimiento"), ("comision", "Comisión %"),
+             ("territorio", "Territorio"), ("manager", "Influencer manager"), ("estatus", "Estatus"), ("notas", "Notas")),
+        base, widths=dict(creator_id=16, creador=20, firma=14, vencimiento=14, territorio=20, manager=24, notas=36),
+        date_cols=("firma", "vencimiento"), center_cols=("tier", "exclusividad"),
+        lists=dict(exclusividad=["Sí", "No"], estatus=["Activo", "En renovación", "Finalizado"]))
+    add("rates", "Rate card",
+        cols(("creator_id", "ID"), ("creador", "Creador"), ("tier", "Tier"), ("plataforma_principal", "Plataforma principal"),
+             ("yt_integracion", "YouTube integración"), ("yt_dedicado", "YouTube dedicado"), ("yt_short", "YouTube Short"),
+             ("tiktok", "TikTok"), ("ig_reel", "Instagram Reel"), ("ig_story", "Instagram Story"),
+             ("ig_post", "Instagram post"), ("stream_hora", "Stream (por hora)"), ("moneda", "Moneda"),
+             ("vigencia", "Vigencia"), ("notas", "Notas")),
+        base, widths=dict(creator_id=16, creador=20, notas=36), date_cols=("vigencia",), center_cols=("tier", "moneda"),
+        lists=dict(moneda=["USD", "MXN", "EUR", "BRL", "COP"]))
     add("plataformas", "Plataformas",
         cols(("creator_id", "ID"), ("creador", "Creador"), ("plataforma", "Plataforma"), ("url", "Cuenta"),
              ("seguidores", "Seguidores"), ("promedio_views", "Promedio views"), ("principal", "Principal")),
@@ -940,6 +1056,24 @@ def write_book(out, ctx):
         cols(("creator_id", "ID"), ("creador", "Creador"), ("campana", "Campaña"), ("marca", "Marca / título"),
              ("empresa_matriz", "Empresa matriz"), ("mes", "Mes"), ("anio", "Año")),
         ctx["campaigns_creator"], widths=dict(creator_id=16, creador=20, campana=56, marca=28, empresa_matriz=30))
+    add("clientes", "Clientes",
+        cols(("client_id", "ID"), ("cliente", "Cliente"), ("empresa_matriz", "Empresa matriz"), ("cuenta", "Cuenta MCR"),
+             ("lead", "Lead MCR"), ("exclusiva", "Agencia exclusiva"), ("estatus", "Estatus"), ("contacto", "Contacto"),
+             ("cargo", "Cargo"), ("correo", "Correo"), ("telefono", "Teléfono"), ("pais", "País"), ("desde", "Desde"),
+             ("notas", "Notas")),
+        ctx["clients"], widths=dict(client_id=8, cliente=22, empresa_matriz=28, cuenta=18, lead=24, contacto=26,
+                                    cargo=22, correo=28, notas=36),
+        date_cols=("desde",), center_cols=("exclusiva",), empty_rows=15, freeze_cols=0,
+        lists=dict(estatus=["Activo", "Pitch", "Pausado", "Perdido"], exclusiva=["Sí", "No"]))
+    add("registro", "Campañas",
+        cols(("campaign_id", "ID"), ("campana", "Campaña"), ("cliente", "Cliente"), ("marca", "Marca / título"),
+             ("cuenta", "Cuenta MCR"), ("inicio", "Inicio"), ("fin", "Fin"), ("region", "Región"), ("creadores", "Creadores"),
+             ("entregables", "Entregables"), ("presupuesto", "Presupuesto"), ("fee", "Fee MCR"), ("moneda", "Moneda"),
+             ("resultados", "Resultados / KPIs"), ("estatus", "Estatus"), ("responsable", "Responsable"), ("notas", "Notas")),
+        [], widths=dict(campana=34, cliente=20, marca=24, creadores=36, entregables=36, resultados=40, responsable=22,
+                        notas=36), date_cols=("inicio", "fin"), empty_rows=40, freeze_cols=1,
+        lists=dict(estatus=["Propuesta", "Aprobada", "En curso", "Finalizada", "Cancelada"],
+                   moneda=["USD", "MXN", "EUR", "BRL", "COP"]))
     add("marcas", "Marcas",
         cols(("brand_id", "ID"), ("marca", "Marca / título"), ("empresa_matriz", "Empresa matriz"),
              ("en_web", "Logo en web"), ("exclusiva", "Agencia exclusiva"), ("campanas_n", "Campañas"),
@@ -1033,7 +1167,7 @@ def main():
 
     # ajustes internos (hojas Staff / Ajustes_Creadores) y maestro previo
     adj_files = [f for f in files if f not in roster_files and f not in bday_files]
-    staff_raw, adjustments = staff.load_internal_adjustments(adj_files)
+    staff_raw, adjustments, nicknames = staff.load_internal_adjustments(adj_files)
     staff_sources = []
     for n, (f, rows) in enumerate(staff_raw, 1):
         sid = src.add(f"S3{n}", f"Staff interno · {os.path.basename(f)}", 1, "Excel interno", os.path.basename(f),
@@ -1105,6 +1239,12 @@ def main():
     for i, t in enumerate(team, 1):
         t["notas"] = None
         t["person_id"] = f"P{i:03d}"
+    org_files = sorted(glob.glob(os.path.join(args.interno, "*rganigrama*.html")))
+    ex_keys = {staff.key(r["nombre"]) for _, rows in staff_sources for r in rows
+               if staff.normalize_estado(r.get("estado")) == "Ex-equipo"}
+    ex_keys |= {staff.key(str(r["nombre"]).split()[0]) for _, rows in staff_sources for r in rows
+                if staff.normalize_estado(r.get("estado")) == "Ex-equipo" and len(str(r["nombre"]).split()) > 1}
+    org_rows = merge_org(team, org_files[-1], nicknames, ex_keys) if org_files else []
     staff_rows = staff.staff_personal_rows(team)
     creator_personal = staff.creator_personal_rows(master, prev_creators)
 
@@ -1128,7 +1268,7 @@ def main():
     # assets
     assets = inventory_assets(args.theme)
     creator_by_asset = {c["retrato"]: c["creator_id"] for c in master if c["retrato"]}
-    team_by_asset = {t["foto"]: t["person_id"] for t in team if t["foto"]}
+    team_by_asset = {t["foto"]: t["person_id"] for t in team if t.get("foto")}
     brand_by_asset = {b["logo"]: b["brand_id"] for b in brands if b["logo"]}
     case_by_asset = {}
     for c in case_rows:
@@ -1155,7 +1295,8 @@ def main():
     gaps.sort(key=lambda g: ({"Alta": 0, "Media": 1, "Baja": 2}[g["prioridad"]], g["area"], str(g["entidad"])))
     ctx = dict(
         src=src, agency=research.agency_rows(src), figures=research.figures(src), timeline=research.timeline(src),
-        team=team, staff_personal=staff_rows, creator_personal=creator_personal, creators=master, creator_cols=CREATOR_COLS,
+        team=team, org=org_rows, clients=build_clients(org_rows, team, master), legal=load_legal(args.theme), contact=load_contact(args.theme),
+        services=load_services(args.theme), staff_personal=staff_rows, creator_personal=creator_personal, creators=master, creator_cols=CREATOR_COLS,
         web_fixes=web_corrections(resolver.conflicts, master),
         platforms=plats, audience=aud, campaigns_creator=camps, brands=brands, cases=case_rows, press=press,
         assets=assets, conflicts=resolver.conflicts, gaps=gaps, mapping=mapping,
@@ -1256,6 +1397,84 @@ def fix_platform_labels(master, plats, gaps):
                     p["plataforma"] = "kick"
             gaps.append(dict(area="Creadores", entidad=m["creator_id"], problema="URL de Kick en la columna Twitch",
                              detalle=url, accion="Reclasificado como Kick; mover a su columna en CREADORES_INTERNOS"))
+
+
+ORG_AREA = {"Dirección": "Dirección", "Soporte transversal": "Soporte transversal", "Operaciones": "Operaciones"}
+
+
+def merge_org(team, path, nicknames, ex_keys):
+    """Cruza el organigrama con el equipo: cuentas, verticales, rol en cada cuenta, modalidad y junta directiva."""
+    rows, board = org.load_org(path)
+    out = []
+    for t in team:
+        t["area"] = None  # el área sale del organigrama; quien no aparece queda por rellenar
+    for r in rows:
+        person = org.resolve(r["apodo"], team, nicknames)
+        if not person:
+            if org.key(r["apodo"]) in ex_keys:
+                continue
+            person = dict(person_id=f"P{len(team) + 1:03d}", nombre=r["apodo"],
+                          cargo=(r["rol"] or "").split(" · ")[0] or None, nivel_org="Equipo")
+            team.append(person)
+        r["person_id"], r["persona"] = person["person_id"], person["nombre"]
+        out.append(r)
+    for t in team:
+        mine = [r for r in out if r["person_id"] == t["person_id"]]
+        if not mine:
+            continue
+        first = mine[0]
+        t["area"] = first["cuenta"] if first["bloque"] == "Áreas internas" else (
+            "Finanzas" if first["cuenta"] == "Finanzas" else ORG_AREA.get(first["bloque"]))
+        cuentas = []
+        for r in mine:
+            if r["bloque"] in ("Operaciones",):
+                cuentas.append(r["cuenta"] + (f" · {r['vertical'].replace('Vertical ', '')}" if r["vertical"] else ""))
+        t["cuentas"] = ", ".join(dict.fromkeys(cuentas)) or None
+        t["roles_cuenta"] = ", ".join(dict.fromkeys(r["rol"] for r in mine if r["rol"])) or None
+        t["lidera"] = ", ".join(dict.fromkeys(r["cuenta"] for r in mine if r["lidera"] and r["bloque"] != "Dirección")) or None
+        mods = {r["modalidad"] for r in mine if r["modalidad"]}
+        if len({r["cuenta"] for r in mine if r["bloque"] == "Operaciones"}) > 1:
+            mods.add("Multi-cuenta")
+        t["modalidad"] = ", ".join(sorted(mods)) or "Fijo"
+    for b in board:
+        person = org.resolve(b["apodo"], team, nicknames)
+        if person:
+            person["junta"] = b["rol"]
+    for r in out:
+        r["lidera"] = "Sí" if r["lidera"] else None
+        r["vertical"] = ", ".join(x for x in (r["vertical"], r["subvertical"]) if x) or None
+    return out
+
+
+ACCOUNT_CLIENT = {"Bloodstrike": "Blood Strike"}
+
+
+def build_clients(org_rows, team, creators):
+    """Clientes actuales: cuentas del organigrama + agencias exclusivas del sitio. Contactos por rellenar."""
+    from brands import EXCLUSIVE
+    by_id = {t["person_id"]: t for t in team}
+    rows, seen = [], set()
+    accounts = [r["cuenta"] for r in org_rows if r["bloque"] == "Operaciones"]
+    for acc in dict.fromkeys(accounts):
+        if acc in ("Bailes", "Nuevas Cuentas"):
+            continue
+        name = ACCOUNT_CLIENT.get(acc, acc)
+        leads = [r["person_id"] for r in org_rows if r["cuenta"] == acc and r["lidera"]]
+        if not leads:
+            leads = [t["person_id"] for t in team if t.get("junta") and key(t["junta"]) == key(acc)]
+        rows.append(dict(cliente=name, cuenta=acc, lead=", ".join(by_id[l]["nombre"] for l in leads) or None,
+                         estatus="Activo"))
+        seen.add(key(name))
+    for ex in sorted(EXCLUSIVE):
+        if key(ex) not in seen:
+            active = any(c.get("estado_campana") == "Con campaña" and key(ex) in key(c.get("campana_vigente"))
+                         for c in creators)
+            rows.append(dict(cliente=ex, estatus="Activo" if active else None))
+    for i, r in enumerate(rows, 1):
+        r["client_id"] = f"CL{i:02d}"
+        r["empresa_matriz"] = BRAND_PARENTS.get(r["cliente"])
+        r["exclusiva"] = "Sí" if r["cliente"] in EXCLUSIVE else None
+    return rows
 
 
 def tier_for_reach(reach):

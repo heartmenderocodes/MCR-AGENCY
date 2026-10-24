@@ -5,6 +5,7 @@ import openpyxl
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.writer.theme import theme_xml
 
@@ -52,7 +53,7 @@ def banner(ws, title, width_cols):
 
 
 def table_sheet(wb, name, title, columns, rows, widths=None, link_cols=(), link_text=None, int_cols=(), pct_cols=(),
-                wrap_cols=(), center_cols=(), freeze_cols=2):
+                wrap_cols=(), center_cols=(), freeze_cols=2, empty_rows=0, date_cols=(), lists=None):
     """columns: [(campo, etiqueta)]. Encabezado en la fila 4 y datos desde la 5."""
     labels = [label for _, label in columns]
     dupes = {l for l in labels if labels.count(l) > 1}
@@ -88,9 +89,17 @@ def table_sheet(wb, name, title, columns, rows, widths=None, link_cols=(), link_
                 cell.number_format = "#,##0"
             if field in pct_cols and isinstance(v, (int, float)):
                 cell.number_format = "0.00"
-    last_row = hdr + max(len(rows), 1)
+    for r_i in range(hdr + len(rows) + 1, hdr + len(rows) + empty_rows + 1):
+        for c_i in range(1, len(columns) + 1):
+            ws.cell(r_i, c_i).font = body
+            ws.cell(r_i, c_i).border = line
+    for r_i in range(hdr + 1, hdr + len(rows) + empty_rows + 1):
+        for c_i, (field, _) in enumerate(columns, 1):
+            if field in date_cols:
+                ws.cell(r_i, c_i).number_format = "DD/MM/YYYY"
+    last_row = hdr + max(len(rows) + empty_rows, 1)
     last_col = get_column_letter(len(columns))
-    if rows:
+    if rows or empty_rows:
         t = Table(displayName=f"T_{re.sub(r'[^A-Za-z0-9]', '_', name)}", ref=f"A{hdr}:{last_col}{last_row}")
         t.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
         ws.add_table(t)
@@ -99,6 +108,11 @@ def table_sheet(wb, name, title, columns, rows, widths=None, link_cols=(), link_
     for i, (field, label) in enumerate(columns, 1):
         ws.column_dimensions[get_column_letter(i)].width = widths.get(field, max(11, min(34, len(label) + 5)))
     ws.row_dimensions[hdr].height = 30
+    for field, options in (lists or {}).items():
+        col = get_column_letter([f for f, _ in columns].index(field) + 1)
+        dv = DataValidation(type="list", formula1='"' + ",".join(options) + '"', allow_blank=True)
+        dv.add(f"{col}{hdr + 1}:{col}{last_row + 500}")
+        ws.add_data_validation(dv)
     for i, (field, _) in enumerate(columns, 1):
         if field == "tier":
             col = get_column_letter(i)

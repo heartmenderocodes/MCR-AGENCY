@@ -148,7 +148,7 @@ BRAND_PARENTS = {
     "Call of Duty: Warzone Mobile": "Activision (Microsoft)", "Call of Duty: Warzone": "Activision (Microsoft)",
     "Call of Duty: Mobile": "Activision (Microsoft)", "Call of Duty: Modern Warfare III": "Activision (Microsoft)",
     "Call of Duty": "Activision (Microsoft)", "Diablo IV": "Blizzard (Microsoft)", "Xbox": "Microsoft",
-    "Activision": "Microsoft",
+    "Activision": "Microsoft", "Bambu Lab": "Bambu Lab",
     "PUBG Mobile": "Tencent (Lightspeed) / Krafton", "Arena Breakout": "Tencent (MoreFun Studios)",
     "Arena Breakout: Infinite": "Tencent (MoreFun Studios)", "Delta Force": "Tencent (TiMi)",
     "Honor of Kings": "Tencent (TiMi)", "Ace Force 2": "Tencent", "Dying Light: The Beast": "Techland (Tencent)",

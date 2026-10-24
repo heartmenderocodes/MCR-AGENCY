@@ -51,8 +51,8 @@ def _int(v):
 
 
 def load_internal_adjustments(paths):
-    """Devuelve (staff_sources, creator_adjustments). Cada staff_source = (path, filas)."""
-    staff, adjustments = [], []
+    """Devuelve (staff_sources, creator_adjustments, apodos). Cada staff_source = (path, filas)."""
+    staff, adjustments, nicknames = [], [], {}
     for path in paths:
         wb = openpyxl.load_workbook(path, data_only=True)
         for ws in wb.worksheets:
@@ -73,6 +73,12 @@ def load_internal_adjustments(paths):
                             row[f] = _int(row[f])
                     rows.append(row)
                 staff.append((path, rows))
+            elif title.startswith("apodos"):
+                hr, cols = _header_map(ws, {"APODO": "apodo", "NOMBRE": "nombre"}, "APODO")
+                for r in range(hr + 1, ws.max_row + 1) if hr else ():
+                    a, n = ws.cell(r, cols["apodo"]).value, ws.cell(r, cols["nombre"]).value
+                    if a and n:
+                        nicknames[key(a)] = str(n).strip()
             elif title.startswith("ajustes"):
                 hr, cols = _header_map(ws, {"CREATOR_ID": "creator_id", "CAMPO": "campo", "VALOR": "valor",
                                             "MOTIVO": "motivo"}, "CREATOR_ID")
@@ -85,7 +91,7 @@ def load_internal_adjustments(paths):
                                                 valor=ws.cell(r, cols["valor"]).value,
                                                 motivo=ws.cell(r, cols.get("motivo", 0)).value if cols.get("motivo") else None,
                                                 fuente=os.path.basename(path)))
-    return staff, adjustments
+    return staff, adjustments, nicknames
 
 
 def load_previous_master(path):
@@ -199,32 +205,44 @@ CREATOR_PERSONAL_COLS = [
     ("cumple_dia", "Día", "input"), ("cumple_mes", "Mes", "input"), ("nac_anio", "Año nacimiento", "input"),
     ("cumple", "Cumpleaños", "formula"), ("edad", "Edad", "formula"), ("proximo_cumple", "Próximo cumpleaños", "formula"),
     ("dias_cumple", "Días para cumple", "formula"),
-    ("ing_anio", "Firma año", "input"), ("ing_mes", "Firma mes", "input"), ("ing_dia", "Firma día", "input"),
-    ("fecha_ingreso", "Fecha firma", "formula"), ("precision", "Precisión firma", "formula"),
-    ("antiguedad", "Antigüedad en MCR", "formula"), ("proximo_aniversario", "Próximo aniversario", "formula"),
+    ("fecha_ingreso", "Fecha firma", "formula"), ("antiguedad", "Antigüedad en MCR", "formula"), ("proximo_aniversario", "Próximo aniversario", "formula"),
     ("dias_aniversario", "Días para aniversario", "formula"), ("notas", "Notas", "input"),
 ]
 
 
-def personal_formulas(columns, n):
+def personal_formulas(columns, n, signing_lookup=None):
+    """Fórmulas de una fila. Staff: ingreso por año/mes/día. Creadores: fecha de firma tomada de Contratos."""
     L = {f: get_column_letter(i) for i, (f, _, _) in enumerate(columns, 1)}
     d, m, y = f"{L['cumple_dia']}{n}", f"{L['cumple_mes']}{n}", f"{L['nac_anio']}{n}"
-    ia, im, idd = f"{L['ing_anio']}{n}", f"{L['ing_mes']}{n}", f"{L['ing_dia']}{n}"
     fi, pc, pa = f"{L['fecha_ingreso']}{n}", f"{L['proximo_cumple']}{n}", f"{L['proximo_aniversario']}{n}"
-    day_i = f'IF({idd}="",1,{idd})'
-    return {
+    out = {
         "cumple": f'=IF(OR({d}="",{m}=""),"",TEXT(DATE(2000,{m},{d}),"dd/mm"))',
         "edad": f'=IF(OR({y}="",{d}="",{m}=""),"",DATEDIF(DATE({y},{m},{d}),TODAY(),"y"))',
         "proximo_cumple": f'=IF(OR({d}="",{m}=""),"",DATE(YEAR(TODAY())+IF(DATE(YEAR(TODAY()),{m},{d})<TODAY(),1,0),{m},{d}))',
         "dias_cumple": f'=IF({pc}="","",{pc}-TODAY())',
-        "fecha_ingreso": f'=IF({ia}="","",DATE({ia},IF({im}="",1,{im}),{day_i}))',
-        "precision": f'=IF({ia}="","",IF({im}="","Sólo año",IF({idd}="","Año y mes","Fecha exacta")))',
-        "antiguedad": (f'=IF({fi}="","",IF({im}="",(YEAR(TODAY())-{ia})&" años (aprox.)",'
-                       f'DATEDIF({fi},TODAY(),"y")&" a "&DATEDIF({fi},TODAY(),"ym")&" m"))'),
-        "proximo_aniversario": (f'=IF(OR({fi}="",{im}=""),"",DATE(YEAR(TODAY())+'
-                                f'IF(DATE(YEAR(TODAY()),{im},{day_i})<TODAY(),1,0),{im},{day_i}))'),
         "dias_aniversario": f'=IF({pa}="","",{pa}-TODAY())',
     }
+    if "ing_anio" in L:
+        ia, im, idd = f"{L['ing_anio']}{n}", f"{L['ing_mes']}{n}", f"{L['ing_dia']}{n}"
+        day_i = f'IF({idd}="",1,{idd})'
+        out.update({
+            "fecha_ingreso": f'=IF({ia}="","",DATE({ia},IF({im}="",1,{im}),{day_i}))',
+            "precision": f'=IF({ia}="","",IF({im}="","Sólo año",IF({idd}="","Año y mes","Fecha exacta")))',
+            "antiguedad": (f'=IF({fi}="","",IF({im}="",(YEAR(TODAY())-{ia})&" años (aprox.)",'
+                           f'DATEDIF({fi},TODAY(),"y")&" a "&DATEDIF({fi},TODAY(),"ym")&" m"))'),
+            "proximo_aniversario": (f'=IF(OR({fi}="",{im}=""),"",DATE(YEAR(TODAY())+'
+                                    f'IF(DATE(YEAR(TODAY()),{im},{day_i})<TODAY(),1,0),{im},{day_i}))'),
+        })
+    else:
+        sheet, id_col, date_col = signing_lookup
+        rng = f"INDEX('{sheet}'!${date_col}$5:${date_col}$2000,MATCH($A{n},'{sheet}'!${id_col}$5:${id_col}$2000,0))"
+        out.update({
+            "fecha_ingreso": f'=IFERROR(IF({rng}="","",{rng}),"")',
+            "antiguedad": f'=IF({fi}="","",DATEDIF({fi},TODAY(),"y")&" a "&DATEDIF({fi},TODAY(),"ym")&" m")',
+            "proximo_aniversario": (f'=IF({fi}="","",DATE(YEAR(TODAY())+IF(DATE(YEAR(TODAY()),MONTH({fi}),DAY({fi}))'
+                                    f'<TODAY(),1,0),MONTH({fi}),DAY({fi})))'),
+        })
+    return out
 
 
 def staff_personal_rows(team):
@@ -246,20 +264,19 @@ def creator_personal_rows(creators, previous):
         rows.append(dict(person_id=c["creator_id"], nombre=c["nombre_publico"], nombre_real=c["nombre_real"],
                          tier=c["tier"], pais=c["pais"],
                          cumple_dia=c["cumple_dia"] or prev.get("cumple_dia"), cumple_mes=c["cumple_mes"] or prev.get("cumple_mes"),
-                         nac_anio=c.get("nac_anio") or prev.get("nac_anio"), ing_anio=c.get("firma_anio") or prev.get("ing_anio"),
-                         ing_mes=c.get("firma_mes") or prev.get("ing_mes"), ing_dia=c.get("firma_dia") or prev.get("ing_dia"),
+                         nac_anio=c.get("nac_anio") or prev.get("nac_anio"),
                          fuente_cumple="S02" if c["cumple_dia"] else ("S40" if prev.get("cumple_dia") else None),
                          fuente_ingreso="S40" if prev.get("ing_anio") else None,
                          notas=None))
     return rows
 
 
-def finish_personal_sheet(ws, columns, n_rows, hdr=4):
+def finish_personal_sheet(ws, columns, n_rows, hdr=4, signing_lookup=None):
     """Rellena fórmulas, colorea entradas, valida y protege la hoja (sin contraseña)."""
     first, last = hdr + 1, hdr + max(n_rows, 1)
     L = {f: i for i, (f, _, _) in enumerate(columns, 1)}
     for n in range(first, last + 1):
-        for f, formula in personal_formulas(columns, n).items():
+        for f, formula in personal_formulas(columns, n, signing_lookup).items():
             c = ws.cell(n, L[f], formula)
             c.fill = FORMULA_FILL
             c.font = FORMULA_FONT
@@ -278,7 +295,7 @@ def finish_personal_sheet(ws, columns, n_rows, hdr=4):
             hc.fill = PatternFill("solid", fgColor="0F0F0F")
     rules = [("cumple_dia", 1, 31), ("cumple_mes", 1, 12), ("nac_anio", 1940, 2015), ("ing_anio", 2015, 2035),
              ("ing_mes", 1, 12), ("ing_dia", 1, 31)]
-    for f, lo, hi in rules:
+    for f, lo, hi in [r for r in rules if r[0] in L]:
         col = get_column_letter(L[f])
         dv = DataValidation(type="whole", operator="between", formula1=str(lo), formula2=str(hi), allow_blank=True,
                             showErrorMessage=True, errorTitle="Valor fuera de rango", error=f"Escribe un número entre {lo} y {hi}.")
