@@ -30,5 +30,6 @@ amarillas, pasa el maestro vigente con `--previo`.
 - `brands.py`: reglas para clasificar campañas por marca y el mapa de empresas matriz.
 - `research.py`: investigación pública (sitio, comunicados, prensa).
 - `staff.py`: equipo, ajustes internos y hojas de información personal.
+- `build_social.py`: biblia de social (marca, línea editorial, calendario mensual y solicitudes de diseño) a partir del maestro.
 
 **Los datos no van al repo.** El repo es público y el Excel trae nombres reales, teléfonos y cumpleaños; `.gitignore` bloquea `*.xlsx`, `*.zip` y las carpetas de datos.
