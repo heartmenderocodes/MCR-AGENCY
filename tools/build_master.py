@@ -33,9 +33,11 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
+import layout
 import research
 import staff
-from brands import BRAND_RULES, BRAND_PARENTS
+import textfmt
+from brands import BRAND_PARENTS, BRAND_RULES
 
 VERSION = "1.0.0"
 TODAY = dt.date.today()
@@ -812,312 +814,184 @@ def consolidate(theme, internals, birthdays, src, resolver, research_rows):
 
 # ─────────────────────────── escritura ───────────────────────────
 
-C_BG = "1B1033"
-C_ACCENT = "7B3FE4"
-C_HEADER_FONT = "FFFFFF"
-C_ZEBRA = "F5F1FC"
-TIER_FILL = {"AAA": "FFE08A", "Mid": "CFE3FF", "Rising": "D9F2D9"}
-LEVEL_FILL = {"1 · Interno": "D9F2D9", "2 · Oficial": "CFE3FF", "3 · Externo": "F3E2C7"}
-THIN = Side(style="thin", color="DDD6EE")
+SH = dict(idx="00_Índice", res="01_Resumen", agencia="02_Agencia", cifras="03_Cifras", crono="04_Cronología",
+          equipo="05_Equipo", p_staff="06_Personal_Staff", p_creadores="07_Personal_Creadores", creadores="08_Creadores",
+          plataformas="09_Plataformas", audiencia="10_Audiencia", campanas="11_Campañas_Creador", marcas="12_Marcas",
+          portafolio="13_Portafolio", prensa="14_Prensa_Premios")
 
-
-class Book:
-    def __init__(self):
-        self.wb = openpyxl.Workbook()
-        self.wb.remove(self.wb.active)
-        self.tables = 0
-        self.index = []
-
-    def sheet(self, name, title, description, columns, rows, widths=None, link_cols=(), date_cols=(),
-              int_cols=(), pct_cols=(), wrap_cols=()):
-        labels = [label for _, label in columns]
-        dupes = {l for l in labels if labels.count(l) > 1}
-        if dupes:  # Excel rechaza tablas con encabezados repetidos
-            raise ValueError(f"{name}: encabezados repetidos {dupes}")
-        ws = self.wb.create_sheet(name)
-        self.index.append((name, description, len(rows)))
-        ws["A1"] = title
-        ws["A1"].font = Font(bold=True, size=16, color=C_BG)
-        ws["A2"] = description
-        ws["A2"].font = Font(italic=True, size=10, color="6B6480")
-        hdr = 4
-        for i, (_, label) in enumerate(columns, 1):
-            c = ws.cell(hdr, i, label)
-            c.font = Font(bold=True, color=C_HEADER_FONT)
-            c.fill = PatternFill("solid", fgColor=C_BG)
-            c.alignment = Alignment(vertical="center", wrap_text=True)
-        for r_i, row in enumerate(rows, hdr + 1):
-            for c_i, (field, _) in enumerate(columns, 1):
-                v = row.get(field) if isinstance(row, dict) else row[c_i - 1]
-                if isinstance(v, (list, tuple)):
-                    v = ", ".join(map(str, v))
-                cell = ws.cell(r_i, c_i, v)
-                cell.border = Border(bottom=THIN)
-                if field in link_cols and isinstance(v, str) and v.startswith(("http", "www", "instagram", "tiktok", "twitch")):
-                    url = v if v.startswith("http") else "https://" + v
-                    cell.hyperlink = url.split()[0]
-                    cell.font = Font(color=C_ACCENT, underline="single")
-                if field in date_cols and isinstance(v, (dt.date, dt.datetime)):
-                    cell.number_format = "DD/MM/YYYY"
-                if field in int_cols and isinstance(v, (int, float)):
-                    cell.number_format = "#,##0"
-                if field in pct_cols and isinstance(v, (int, float)):
-                    cell.number_format = "0.00"
-                if field in wrap_cols:
-                    cell.alignment = Alignment(wrap_text=True, vertical="top")
-        last_row = hdr + max(len(rows), 1)
-        last_col = get_column_letter(len(columns))
-        if rows:
-            self.tables += 1
-            t = Table(displayName=f"T_{re.sub(r'[^A-Za-z0-9]', '_', name)}", ref=f"A{hdr}:{last_col}{last_row}")
-            t.tableStyleInfo = TableStyleInfo(name="TableStyleLight1", showRowStripes=True)
-            ws.add_table(t)
-        ws.freeze_panes = ws.cell(hdr + 1, 3 if len(columns) > 4 else 1)
-        widths = widths or {}
-        for i, (field, label) in enumerate(columns, 1):
-            ws.column_dimensions[get_column_letter(i)].width = widths.get(field, max(12, min(40, len(label) + 4)))
-        ws.row_dimensions[hdr].height = 32
-        ws.sheet_view.showGridLines = False
-        self._level_format(ws, columns, hdr, last_row)
-        return ws
-
-    def _level_format(self, ws, columns, hdr, last_row):
-        for i, (field, _) in enumerate(columns, 1):
-            col = get_column_letter(i)
-            rng = f"{col}{hdr + 1}:{col}{last_row}"
-            if field in ("nivel", "nivel_ganador", "nivel_descartado"):
-                for lab, color in LEVEL_FILL.items():
-                    ws.conditional_formatting.add(rng, CellIsRule(operator="equal", formula=[f'"{lab}"'],
-                                                                  fill=PatternFill("solid", fgColor=color)))
-            if field == "tier":
-                for lab, color in TIER_FILL.items():
-                    ws.conditional_formatting.add(rng, CellIsRule(operator="equal", formula=[f'"{lab}"'],
-                                                                  fill=PatternFill("solid", fgColor=color)))
-            if field == "severidad":
-                for lab, color in (("Alta", "F8C9C9"), ("Media", "FBE3B5"), ("Baja", "EEF0F2"), ("Revisar", "E6DAFB")):
-                    ws.conditional_formatting.add(rng, CellIsRule(operator="equal", formula=[f'"{lab}"'],
-                                                                  fill=PatternFill("solid", fgColor=color)))
-            if field == "estado_roster":
-                ws.conditional_formatting.add(rng, FormulaRule(formula=[f'LEFT({col}{hdr + 1},4)="Sólo"'],
-                                                               fill=PatternFill("solid", fgColor="FBE3B5")))
-
-    def save(self, path):
-        self.wb.save(path)
+DESCRIPTIONS = dict(res="Conteos generales", agencia="Ficha corporativa", cifras="Cifras actuales de la agencia",
+                    crono="Hitos de 2019 a hoy", equipo="Equipo actual",
+                    p_staff="Cumpleaños, antigüedad y aniversarios del equipo",
+                    p_creadores="Cumpleaños y antigüedad en MCR de los creadores", creadores="Roster completo",
+                    plataformas="Cuentas por plataforma", audiencia="Audiencia por país, idioma y género",
+                    campanas="Historial de campañas por creador", marcas="Marcas, clientes y empresa matriz",
+                    portafolio="Casos publicados", prensa="Prensa, premios y presencia institucional")
 
 
 def cols(*pairs):
     return list(pairs)
 
 
-SH = dict(idx="00_Índice", res="01_Resumen", agencia="02_Agencia", cifras="03_Cifras_declaradas",
-          crono="04_Cronología", equipo="05_Equipo", p_staff="06_Personal_Staff", p_creadores="07_Personal_Creadores",
-          creadores="08_Creadores", plataformas="09_Plataformas", audiencia="10_Audiencia",
-          campanas="11_Campañas_Creador", marcas="12_Marcas", portafolio="13_Portafolio", prensa="14_Prensa_Premios",
-          assets="15_Assets", fuentes="16_Fuentes")
+def shape(ctx):
+    """Formato de textos y columnas finales de cada hoja."""
+    handles = [c["nombre_publico"] for c in ctx["creators"]]
+    brand_names = sorted({b for _, b in BRAND_RULES} | {"REDMAGIC", "Bloodstrike", "Gang Star", "GangStar"})
+    keep = handles + brand_names
+    for c in ctx["creators"]:
+        c["nombre_real"] = textfmt.proper_name(c["nombre_real"])
+        c["estado_campana"] = textfmt.sentence(c["estado_campana"])
+        c["campana_vigente"] = textfmt.us_dates_to_es(textfmt.sentence(c["campana_vigente"], keep))
+        c["plataforma_principal"] = textfmt.platform(c["plataforma_principal"])
+        c["media_kit"] = textfmt.yes_no(c["media_kit"])
+        c["correo_en_redes"] = textfmt.yes_no(c["correo_en_redes"])
+        c["stream"] = ", ".join(textfmt.platform(x.strip()) for x in (c["stream"] or "").split(",") if x.strip()) or None
+        if c.get("notas_internas"):
+            c["notas_internas"] = textfmt.sentence(c["notas_internas"], keep)
+    for p in ctx["platforms"]:
+        p["plataforma"] = textfmt.platform(p["plataforma"])
+        p["principal"] = textfmt.yes_no(p["principal"])
+    for a in ctx["audience"]:
+        a["plataforma"] = textfmt.platform(a["plataforma"])
+    for c in ctx["campaigns_creator"]:
+        own = [w.capitalize() if w.islower() else w for w in re.split(r"[_\W\d]+", c["creador"] or "") if len(w) > 2]
+        c["campana"] = textfmt.sentence(c["campana"], own + keep)
+    for t in ctx["team"]:
+        t["nombre"] = textfmt.proper_name(t["nombre"])
+    for r in ctx["staff_personal"]:
+        r["nombre"] = textfmt.proper_name(r["nombre"])
+    for r in ctx["creator_personal"]:
+        r["nombre_real"] = textfmt.proper_name(r["nombre_real"])
+    for p in ctx["press"]:
+        p["fecha_txt"] = textfmt.es_date(p.get("fecha"))
+        p["tipo"] = re.sub(r"^Presencia institucional · Presencia institucional$", "Presencia institucional", p["tipo"])
+        p["tipo"] = p["tipo"].replace("Presencia institucional · ", "")
+    ctx["press"].sort(key=lambda p: textfmt.date_sort_key(p["fecha_txt"]), reverse=True)
+    for t in ctx["timeline"]:
+        t["fecha_txt"] = textfmt.es_date(t["fecha"]) if t["fecha"] else str(t["anio"])
+    ctx["timeline"].sort(key=lambda t: textfmt.date_sort_key(t["fecha_txt"]))
+
+
+def current_figures(ctx):
+    """Una cifra por métrica: la más actual (las que vive en el documento van como fórmula)."""
+    cr, eq = f"'{SH['creadores']}'", f"'{SH['equipo']}'"
+    countries = len({c["pais"] for c in ctx["creators"] if c["pais"]})
+    return [
+        dict(metrica="Años en el sector", valor="=YEAR(TODAY())-2019"),
+        dict(metrica="Equipo", valor=f"=COUNTA({eq}!$A$5:$A$500)"),
+        dict(metrica="Creadores en roster", valor=f"=COUNTA({cr}!$A$5:$A$2000)"),
+        dict(metrica="Países con talento", valor=countries),
+        dict(metrica="Red de creadores", valor="2K+"),
+        dict(metrica="Marcas globales", valor="30+"),
+        dict(metrica="Campañas ejecutadas", valor="1K+"),
+        dict(metrica="Views en YouTube", valor="73B+"),
+        dict(metrica="Facturación anual", valor="+5M USD"),
+        dict(metrica="Oficinas", valor="4 (Barcelona, Madrid, Ciudad de México, São Paulo)"),
+        dict(metrica="Stumble Guys · views acumuladas", valor="+1B"),
+    ]
 
 
 def write_book(out, ctx):
-    b = Book()
-    src = ctx["src"]
-    idx_ws = b.wb.create_sheet(SH["idx"])
-    res = b.wb.create_sheet(SH["res"])
+    shape(ctx)
+    wb = layout.new_workbook()
+    idx_ws = wb.create_sheet(SH["idx"])
+    res = wb.create_sheet(SH["res"])
+    entries = []
 
-    b.sheet(SH["agencia"], "Ficha de la agencia", "Datos corporativos. Las cifras declaradas van por fuente y fecha.",
-            cols(("campo", "Campo"), ("valor", "Valor"), ("fuente", "Fuente"), ("nivel", "Nivel"), ("fecha", "Fecha"),
-                 ("notas", "Notas")),
-            ctx["agency"], widths=dict(campo=30, valor=60, notas=50), date_cols=("fecha",), wrap_cols=("valor", "notas"))
+    def add(key_, title, columns, rows, **kw):
+        ws = layout.table_sheet(wb, SH[key_], title, columns, rows, **kw)
+        entries.append((SH[key_], DESCRIPTIONS[key_], len(rows)))
+        return ws
 
-    b.sheet(SH["cifras"], "Cifras declaradas por fuente",
-            "Cada cifra pública de la agencia con su fecha. Sirve para ver evolución y contradicciones.",
-            cols(("metrica", "Métrica"), ("valor", "Valor"), ("fecha", "Fecha"), ("fuente", "Fuente"),
-                 ("nivel", "Nivel"), ("notas", "Notas")),
-            ctx["figures"], widths=dict(metrica=32, valor=22, notas=50), date_cols=("fecha",))
-
-    b.sheet(SH["crono"], "Cronología", "Hitos de la agencia 2019 → hoy.",
-            cols(("fecha", "Fecha"), ("anio", "Año"), ("hito", "Hito"), ("categoria", "Categoría"),
-                 ("fuente", "Fuente"), ("nivel", "Nivel")),
-            ctx["timeline"], widths=dict(hito=80), date_cols=("fecha",), wrap_cols=("hito",))
-
-    b.sheet(SH["equipo"], "Equipo", "Equipo actual de MCR.",
-            cols(("person_id", "ID"), ("nombre", "Nombre"), ("cargo", "Cargo"), ("area", "Área"), ("nivel_org", "Nivel"),
-                 ("foto", "Foto"), ("notas", "Notas")),
-            ctx["team"], widths=dict(nombre=24, cargo=34, notas=50))
-
-    for key_, title, desc, columns, rows in (
-        ("p_staff", "Información personal · staff",
-         "Cumpleaños, edad, antigüedad y aniversario del equipo. RR. HH. llena las celdas amarillas.",
-         staff.STAFF_PERSONAL_COLS, ctx["staff_personal"]),
-        ("p_creadores", "Información personal · creadores",
-         "Cumpleaños y antigüedad en MCR (desde la firma). La firma se captura en las celdas amarillas.",
-         staff.CREATOR_PERSONAL_COLS, ctx["creator_personal"]),
-    ):
-        ws = b.sheet(SH[key_], title, desc, [(f, lab) for f, lab, _ in columns], rows,
-                     widths=dict(nombre=24, nombre_real=26, cargo=30, estado=22, notas=36, antiguedad=14))
+    add("agencia", "Agencia", cols(("campo", "Campo"), ("valor", "Valor")), ctx["agency"],
+        widths=dict(campo=32, valor=100), wrap_cols=("valor",), freeze_cols=0)
+    add("cifras", "Cifras", cols(("metrica", "Métrica"), ("valor", "Valor")), current_figures(ctx),
+        widths=dict(metrica=36, valor=52), int_cols=("valor",), freeze_cols=0)
+    add("crono", "Cronología", cols(("fecha_txt", "Fecha"), ("hito", "Hito"), ("categoria", "Categoría")),
+        ctx["timeline"], widths=dict(fecha_txt=14, hito=96, categoria=16), wrap_cols=("hito",), freeze_cols=0)
+    add("equipo", "Equipo", cols(("person_id", "ID"), ("nombre", "Nombre"), ("cargo", "Cargo"), ("area", "Área"),
+                                 ("nivel_org", "Nivel")),
+        ctx["team"], widths=dict(person_id=8, nombre=26, cargo=40, area=26, nivel_org=14), freeze_cols=0)
+    for key_, title, columns, rows in (("p_staff", "Información personal · staff", staff.STAFF_PERSONAL_COLS,
+                                        ctx["staff_personal"]),
+                                       ("p_creadores", "Información personal · creadores", staff.CREATOR_PERSONAL_COLS,
+                                        ctx["creator_personal"])):
+        ws = add(key_, title, [(f, lab) for f, lab, _ in columns], rows,
+                 widths=dict(person_id=14, nombre=26, nombre_real=28, cargo=32, notas=36, antiguedad=16,
+                             precision=16, proximo_cumple=14, proximo_aniversario=14, fecha_ingreso=14))
         staff.finish_personal_sheet(ws, columns, len(rows))
-
-    b.sheet(SH["creadores"], "Creadores · maestra",
-            "Una fila por creador. Los valores siguen la jerarquía Interno > Oficial > Externo; la columna fuente_* dice quién ganó.",
-            ctx["creator_cols"], ctx["creators"],
-            widths=dict(nombre_publico=20, variaciones=24, nombre_real=26, otras_cuentas=36, categorias=24, bio=60, campana_vigente=34,
-                        marcas_frecuentes=40, correo=30, notas_internas=40),
-            link_cols=("youtube_url", "tiktok_url", "instagram_url", "twitch_url", "x_url", "kick_url", "otras_cuentas"),
-            int_cols=tuple(f"{p}_seguidores" for p in ("youtube", "tiktok", "instagram", "twitch", "x", "kick"))
-            + ("alcance_total", "youtube_promedio_views"),
-            pct_cols=("youtube_view_rate_pct",), date_cols=("sin_campana_desde",))
-
-    b.sheet(SH["plataformas"], "Creadores × plataforma", "Formato largo para tablas dinámicas.",
-            cols(("creator_id", "creator_id"), ("creador", "Creador"), ("plataforma", "Plataforma"), ("url", "URL"),
-                 ("seguidores", "Seguidores"), ("promedio_views", "Promedio views"), ("principal", "Principal")),
-            ctx["platforms"], link_cols=("url",), int_cols=("seguidores", "promedio_views"), widths=dict(url=44))
-
-    b.sheet(SH["audiencia"], "Audiencia", "Distribuciones de audiencia disponibles (media kits procesados en la web).",
-            cols(("creator_id", "creator_id"), ("creador", "Creador"), ("plataforma", "Plataforma"),
-                 ("dimension", "Dimensión"), ("valor", "Valor"), ("porcentaje", "%"), ("calidad", "Calidad campo"),
-                 ("estado", "Estado registro"), ("origen", "Origen"), ("fuente", "Fuente")),
-            ctx["audience"], pct_cols=("porcentaje",))
-
-    b.sheet(SH["campanas"], "Historial de campañas por creador",
-            "Cada mención de CAMPAÑAS HISTÓRICAS. 'marca' se clasifica por reglas; vacía = sin clasificar.",
-            cols(("creator_id", "creator_id"), ("creador", "Creador"), ("campana", "Campaña (texto original)"),
-                 ("marca", "Marca / título"), ("empresa_matriz", "Empresa matriz"), ("mes", "Mes"), ("anio", "Año"),
-                 ("fuente", "Fuente")),
-            ctx["campaigns_creator"], widths=dict(campana=50, marca=26, empresa_matriz=26))
-
-    b.sheet(SH["marcas"], "Marcas y clientes", "Marcas del sitio + marcas detectadas en el historial de campañas.",
-            cols(("brand_id", "ID"), ("marca", "Marca / título"), ("empresa_matriz", "Empresa matriz"),
-                 ("en_web", "Logo en web"), ("exclusiva", "Agencia exclusiva"), ("campanas_n", "Menciones en historial"),
-                 ("creadores_n", "Creadores distintos"), ("casos_portafolio", "Casos en portafolio"), ("logo", "Asset logo"),
-                 ("fuente_matriz", "Fuente matriz")),
-            ctx["brands"], widths=dict(marca=28, empresa_matriz=30, casos_portafolio=36))
-
-    b.sheet(SH["portafolio"], "Casos de portafolio", "Casos publicados en la web.",
-            cols(("case_id", "ID"), ("titulo", "Caso"), ("subtitulo", "Subtítulo"), ("cliente", "Cliente"),
-                 ("servicios", "Servicios"), ("region", "Región"), ("kpis", "KPIs"), ("descripcion", "Descripción"),
-                 ("assets", "Assets"), ("fuente", "Fuente")),
-            ctx["cases"], widths=dict(titulo=30, kpis=50, descripcion=70, assets=40), wrap_cols=("kpis", "descripcion"))
-
-    b.sheet(SH["prensa"], "Prensa, premios y presencia",
-            "Lo que publica la web (nivel 2) + lo encontrado en investigación (nivel 3).",
-            cols(("item_id", "ID"), ("tipo", "Tipo"), ("fecha", "Fecha"), ("titulo", "Título"), ("medio", "Medio / organización"),
-                 ("caracter", "Carácter"), ("descripcion", "Descripción"), ("url", "URL"), ("fuente", "Fuente"),
-                 ("nivel", "Nivel")),
-            ctx["press"], widths=dict(titulo=56, descripcion=46, url=40, caracter=24), link_cols=("url",),
-            wrap_cols=("titulo",))
-
-    b.sheet(SH["assets"], "Inventario de assets", "Todos los archivos del tema web v2.5.0.",
-            cols(("asset_id", "ID"), ("archivo", "Archivo"), ("categoria", "Categoría"), ("entidad", "Entidad vinculada"),
-                 ("tipo", "Tipo"), ("kb", "KB"), ("dimensiones", "Dimensiones"), ("usado_en", "Usado en"),
-                 ("ruta", "Ruta")),
-            ctx["assets"], widths=dict(archivo=34, usado_en=40, ruta=44))
-
-    b.sheet(SH["fuentes"], "Fuentes", "Registro de fuentes y su nivel en la jerarquía.",
-            cols(("id", "ID"), ("nombre", "Fuente"), ("nivel", "Nivel"), ("tipo", "Tipo"), ("ubicacion", "Ubicación"),
-                 ("fecha", "Fecha"), ("notas", "Notas")),
-            [dict(r, nivel=NIVEL_LABEL[r["nivel"]]) for r in src.rows.values() if not r["id"].startswith(("S3", "S4"))],
-            widths=dict(nombre=44, ubicacion=60, notas=50), link_cols=("ubicacion",), date_cols=("fecha",))
+    add("creadores", "Creadores", ctx["creator_cols"], ctx["creators"],
+        widths=dict(creator_id=16, nombre_publico=20, variaciones=22, nombre_real=28, categorias=26, bio=70,
+                    campana_vigente=36, marcas_frecuentes=40, correo=30, otras_cuentas=30, notas_internas=36,
+                    youtube_url=30, tiktok_url=30, instagram_url=30, twitch_url=26, x_url=24, kick_url=24),
+        link_cols=("youtube_url", "tiktok_url", "instagram_url", "twitch_url", "x_url", "kick_url", "otras_cuentas"),
+        int_cols=tuple(f"{p}_seguidores" for p in ("youtube", "tiktok", "instagram", "twitch", "x", "kick"))
+        + ("alcance_total", "youtube_promedio_views"),
+        pct_cols=("youtube_view_rate_pct",), center_cols=("tier", "en_web", "cumple_dia", "cumple_mes", "media_kit"))
+    add("plataformas", "Plataformas",
+        cols(("creator_id", "ID"), ("creador", "Creador"), ("plataforma", "Plataforma"), ("url", "Cuenta"),
+             ("seguidores", "Seguidores"), ("promedio_views", "Promedio views"), ("principal", "Principal")),
+        ctx["platforms"], link_cols=("url",), int_cols=("seguidores", "promedio_views"),
+        widths=dict(creator_id=16, creador=20, url=40), center_cols=("principal",))
+    add("audiencia", "Audiencia",
+        cols(("creator_id", "ID"), ("creador", "Creador"), ("plataforma", "Plataforma"), ("dimension", "Dimensión"),
+             ("valor", "Valor"), ("porcentaje", "%")),
+        ctx["audience"], pct_cols=("porcentaje",), widths=dict(creator_id=16, creador=20, valor=24))
+    add("campanas", "Campañas por creador",
+        cols(("creator_id", "ID"), ("creador", "Creador"), ("campana", "Campaña"), ("marca", "Marca / título"),
+             ("empresa_matriz", "Empresa matriz"), ("mes", "Mes"), ("anio", "Año")),
+        ctx["campaigns_creator"], widths=dict(creator_id=16, creador=20, campana=56, marca=28, empresa_matriz=30))
+    add("marcas", "Marcas",
+        cols(("brand_id", "ID"), ("marca", "Marca / título"), ("empresa_matriz", "Empresa matriz"),
+             ("en_web", "Logo en web"), ("exclusiva", "Agencia exclusiva"), ("campanas_n", "Campañas"),
+             ("creadores_n", "Creadores"), ("casos_portafolio", "Casos en portafolio")),
+        ctx["brands"], widths=dict(brand_id=8, marca=30, empresa_matriz=32, casos_portafolio=44),
+        int_cols=("campanas_n", "creadores_n"), center_cols=("en_web", "exclusiva"), freeze_cols=0)
+    add("portafolio", "Portafolio",
+        cols(("case_id", "ID"), ("titulo", "Caso"), ("subtitulo", "Subtítulo"), ("cliente", "Cliente"),
+             ("servicios", "Servicios"), ("region", "Región"), ("kpis", "KPIs"), ("descripcion", "Descripción")),
+        ctx["cases"], widths=dict(case_id=8, titulo=32, subtitulo=30, servicios=28, kpis=54, descripcion=80),
+        wrap_cols=("kpis", "descripcion", "subtitulo"))
+    add("prensa", "Prensa y premios",
+        cols(("tipo", "Tipo"), ("fecha_txt", "Fecha"), ("titulo", "Título"), ("medio", "Medio / organización"),
+             ("descripcion", "Descripción"), ("url", "Enlace")),
+        ctx["press"], widths=dict(tipo=24, fecha_txt=16, titulo=70, medio=30, descripcion=60, url=12),
+        link_cols=("url",), link_text="Abrir", wrap_cols=("titulo", "descripcion"), freeze_cols=0)
 
     write_summary(res, ctx)
     staff.protect(res)
-    write_index(idx_ws, b, ctx)
-    b.save(out)
+    layout.index_sheet(idx_ws, [(SH["res"], DESCRIPTIONS["res"], None)] + entries, TODAY.strftime("%d/%m/%Y"))
+    wb.save(out)
 
 
 def write_summary(ws, ctx):
-    ws.sheet_view.showGridLines = False
-    ws["A1"] = "Resumen"
-    ws["A1"].font = Font(bold=True, size=16, color=C_BG)
-    ws["A2"] = "Conteos vivos (fórmulas sobre las hojas). Si editas las hojas, esto se actualiza."
-    ws["A2"].font = Font(italic=True, size=10, color="6B6480")
     cr = f"'{SH['creadores']}'"
     ncol = {f: get_column_letter(i) for i, (f, _) in enumerate(ctx["creator_cols"], 1)}
     rng = lambda f: f"{cr}!${ncol[f]}$5:${ncol[f]}$2000"
+    ps, pc = f"'{SH['p_staff']}'", f"'{SH['p_creadores']}'"
     blocks = [
         ("Creadores", [
-            ("Total en la base", f"=COUNTA({rng('creator_id')})"),
+            ("Total en roster", f"=COUNTA({rng('creator_id')})"),
             ("Publicados en la web", f'=COUNTIF({rng("en_web")},"Sí")'),
             ("Sin publicar en la web", f'=COUNTIF({rng("en_web")},"No")'),
-            ("Con campaña", f'=COUNTIF({rng("estado_campana")},"Con campaña")'),
-            ("Con cumpleaños", f"=COUNT({rng('cumple_dia')})"),
+            ("Con campaña activa", f'=COUNTIF({rng("estado_campana")},"Con campaña")'),
             ("Alcance total sumado", f"=SUM({rng('alcance_total')})"),
         ]),
+        ("Equipo", [
+            ("Personas", f"=COUNTA('{SH['equipo']}'!$A$5:$A$500)"),
+            ("Cumpleaños en 30 días · staff", f'=COUNTIFS({ps}!$J$5:$J$500,">=0",{ps}!$J$5:$J$500,"<=30")'),
+            ("Cumpleaños en 30 días · creadores", f'=COUNTIFS({pc}!$L$5:$L$500,">=0",{pc}!$L$5:$L$500,"<=30")'),
+        ]),
         ("Por tier", [(t, f'=COUNTIF({rng("tier")},"{t}")') for t in ("AAA", "Mid", "Rising")]),
-        ("Por país", [(p, f'=COUNTIF({rng("pais")},"{p}")')
-                      for p, _ in Counter(c["pais"] for c in ctx["creators"] if c["pais"]).most_common()]),
-        ("Equipo y otros", [
-            ("Equipo", f"=COUNTA('{SH['equipo']}'!$A$5:$A$500)"),
-            ("Cumpleaños en los próximos 30 días (staff)",
-             f"=COUNTIFS('{SH['p_staff']}'!$J$5:$J$500,\">=0\",'{SH['p_staff']}'!$J$5:$J$500,\"<=30\")"),
-            ("Cumpleaños en los próximos 30 días (creadores)",
-             f"=COUNTIFS('{SH['p_creadores']}'!$L$5:$L$500,\">=0\",'{SH['p_creadores']}'!$L$5:$L$500,\"<=30\")"),
+        ("Negocio", [
             ("Marcas", f"=COUNTA('{SH['marcas']}'!$A$5:$A$1000)"),
             ("Casos de portafolio", f"=COUNTA('{SH['portafolio']}'!$A$5:$A$500)"),
-            ("Menciones de campañas", f"=COUNTA('{SH['campanas']}'!$A$5:$A$10000)"),
-            ("Assets", f"=COUNTA('{SH['assets']}'!$A$5:$A$2000)"),
+            ("Campañas registradas", f"=COUNTA('{SH['campanas']}'!$A$5:$A$10000)"),
         ]),
+        ("Por país", [(p, f'=COUNTIF({rng("pais")},"{p}")')
+                      for p, _ in Counter(c["pais"] for c in ctx["creators"] if c["pais"]).most_common()]),
     ]
-    r = 4
-    for title, items in blocks:
-        ws.cell(r, 1, title).font = Font(bold=True, color=C_HEADER_FONT)
-        ws.cell(r, 1).fill = PatternFill("solid", fgColor=C_BG)
-        ws.cell(r, 2).fill = PatternFill("solid", fgColor=C_BG)
-        r += 1
-        for label, formula in items:
-            ws.cell(r, 1, label)
-            c = ws.cell(r, 2, formula)
-            c.number_format = "#,##0"
-            c.font = Font(bold=True, color=C_ACCENT)
-            r += 1
-        r += 1
-    ws.column_dimensions["A"].width = 34
-    ws.column_dimensions["B"].width = 18
+    layout.summary_sheet(ws, blocks)
 
-
-def write_index(ws, b, ctx):
-    ws.sheet_view.showGridLines = False
-    ws["A1"] = "MCR Agency · Base maestra"
-    ws["A1"].font = Font(bold=True, size=20, color=C_BG)
-    ws["A2"] = f"Versión {VERSION} · generada el {TODAY.strftime('%d/%m/%Y')} · uso interno, contiene datos personales"
-    ws["A2"].font = Font(italic=True, color="6B6480")
-    ws["A4"] = "Jerarquía ante datos contradictorios"
-    ws["A4"].font = Font(bold=True, size=12)
-    rules = [
-        ("1 · Interno", "Información interna de MCR (este documento, roster interno, RR. HH.). Siempre gana."),
-        ("2 · Oficial", "mcr-agency.com y comunicados propios. Complementa lo que el interno no tiene."),
-        ("3 · Externo", "Prensa, directorios, referencias generales. Sólo llena huecos."),
-        ("Seguidores", "Excepción: gana la cuenta con más seguidores; sin cifra, la del interno."),
-    ]
-    for i, (k, v) in enumerate(rules, 5):
-        c = ws.cell(i, 1, k)
-        c.font = Font(bold=True)
-        if k in LEVEL_FILL:
-            c.fill = PatternFill("solid", fgColor=LEVEL_FILL[k])
-        ws.cell(i, 2, v)
-    r = 10
-    ws.cell(r, 1, "Hoja").font = Font(bold=True, color=C_HEADER_FONT)
-    ws.cell(r, 2, "Contenido").font = Font(bold=True, color=C_HEADER_FONT)
-    ws.cell(r, 3, "Filas").font = Font(bold=True, color=C_HEADER_FONT)
-    for c in range(1, 4):
-        ws.cell(r, c).fill = PatternFill("solid", fgColor=C_BG)
-    entries = [(SH["res"], "Conteos vivos", None)] + b.index
-    for name, desc, n in entries:
-        r += 1
-        c = ws.cell(r, 1, name)
-        c.hyperlink = f"#'{name}'!A1"
-        c.font = Font(color=C_ACCENT, underline="single")
-        ws.cell(r, 2, desc)
-        ws.cell(r, 3, n)
-    r += 2
-    ws.cell(r, 1, "Notas").font = Font(bold=True, size=12)
-    for note in ctx["notes"]:
-        r += 1
-        ws.cell(r, 1, "•")
-        ws.cell(r, 2, note).alignment = Alignment(wrap_text=True)
-    ws.column_dimensions["A"].width = 24
-    ws.column_dimensions["B"].width = 100
-    ws.column_dimensions["C"].width = 8
-
-
-# ─────────────────────────── main ───────────────────────────
 
 def main():
     ap = argparse.ArgumentParser()
@@ -1228,8 +1102,9 @@ def main():
                              detalle=f"{t['ing_anio']}", accion="Plantilla RH: mes y día para calcular el aniversario"))
 
     team = [t for t in team if t["estado"] != "Ex-equipo"]
-    for t in team:
+    for i, t in enumerate(team, 1):
         t["notas"] = None
+        t["person_id"] = f"P{i:03d}"
     staff_rows = staff.staff_personal_rows(team)
     creator_personal = staff.creator_personal_rows(master, prev_creators)
 
@@ -1303,16 +1178,20 @@ def role_area(cargo):
     if not cargo:
         return None
     c = cargo.lower()
-    if any(w in c for w in ("ceo", "cofundador", "cofundadora", "directora general", "cfo", "coo")):
+    if any(w in c for w in ("ceo", "cofundador", "cofundadora", "directora general", "director general", "cfo", "coo")):
         return "Dirección"
-    if "account" in c:
+    if "account" in c or "project" in c:
         return "Cuentas"
-    if "influencer" in c or "contract" in c:
+    if any(w in c for w in ("influencer", "contract", "creator program", "talent")):
         return "Talento"
-    if "pr " in c or c.startswith("pr") or "community" in c or "campaign" in c:
-        return "Campañas / Comunidad / PR"
-    if "design" in c:
+    if any(w in c for w in ("pr ", "community", "campaign", "social media")) or c.startswith("pr"):
+        return "Campañas, comunidad y PR"
+    if any(w in c for w in ("design", "diseñ", "fotógraf", "videógraf", "production")):
         return "Diseño y producción"
+    if "people" in c or "rr. hh" in c:
+        return "Personas"
+    if c.startswith("it ") or " it " in c or "it manager" in c:
+        return "Tecnología"
     return "Operación"
 
 
@@ -1330,8 +1209,7 @@ CREATOR_COLS = [
     ("campanas_historicas_n", "Campañas históricas"), ("marcas_frecuentes", "Marcas frecuentes"),
     ("youtube_url", "URL YouTube"), ("tiktok_url", "URL TikTok"), ("instagram_url", "URL Instagram"),
     ("twitch_url", "URL Twitch"), ("x_url", "URL X"), ("kick_url", "URL Kick"), ("otras_cuentas", "Otras cuentas"),
-    ("bio", "Bio"), ("retrato", "Retrato"), ("media_kit", "Media kit"), ("stream", "Stream en"),
-    ("categorias_web", "Categorías (web)"), ("notas_internas", "Notas"),
+    ("bio", "Bio"), ("media_kit", "Media kit"), ("stream", "Stream en"), ("notas_internas", "Notas"),
 ]
 
 

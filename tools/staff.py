@@ -19,14 +19,15 @@ STAFF_HEADERS = {
     "NOMBRE": "nombre", "CARGO": "cargo", "ESTADO": "estado", "ÁREA": "area", "AREA": "area",
     "CUMPLE DÍA": "cumple_dia", "CUMPLE DIA": "cumple_dia", "CUMPLE MES": "cumple_mes",
     "AÑO NACIMIENTO": "nac_anio", "INGRESO AÑO": "ing_anio", "INGRESO MES": "ing_mes", "INGRESO DÍA": "ing_dia",
-    "INGRESO DIA": "ing_dia", "FECHA SALIDA": "salida", "NOTAS": "notas",
+    "INGRESO DIA": "ing_dia", "FECHA SALIDA": "salida", "NOTAS": "notas", "ALIAS": "alias",
 }
 STAFF_TEMPLATE_COLS = ["NOMBRE", "CARGO", "ESTADO", "ÁREA", "CUMPLE DÍA", "CUMPLE MES", "AÑO NACIMIENTO",
                        "INGRESO AÑO", "INGRESO MES", "INGRESO DÍA", "FECHA SALIDA", "NOTAS"]
 ESTADOS = ("Activo", "Ex-equipo", "Por confirmar")
 PERSONAL_FIELDS = ("cumple_dia", "cumple_mes", "nac_anio", "ing_anio", "ing_mes", "ing_dia")
-INPUT_FILL = PatternFill("solid", fgColor="FFF6CC")
-FORMULA_FILL = PatternFill("solid", fgColor="F1EEF8")
+INPUT_FILL = PatternFill("solid", fgColor="FFF8D6")
+FORMULA_FILL = PatternFill("solid", fgColor="F3ECFF")
+FORMULA_FONT = Font(name="Arial", size=10, color="5500CC")
 
 
 def _header_map(ws, mapping, marker):
@@ -132,7 +133,10 @@ def merge_staff(team, staff_sources, previous, src, resolver, role_area):
             b.setdefault(f, []).append((t.get(f), t["fuente"]))
     for sid, rows in staff_sources:
         for r in rows:
-            t = by_key.get(key(r["nombre"]))
+            t = by_key.get(key(r["nombre"])) or (by_key.get(key(r["alias"])) if r.get("alias") else None)
+            if t and r.get("alias") and key(t["nombre"]) == key(r["alias"]):
+                t["nombre"] = r["nombre"]  # el nombre interno reemplaza al alias de la web
+                by_key[key(r["nombre"])] = t
             if not t:
                 fk = first.get(key(r["nombre"].split()[0]), [])
                 t = fk[0] if len(fk) == 1 and len(r["nombre"].split()) == 1 else None
@@ -161,8 +165,6 @@ def merge_staff(team, staff_sources, previous, src, resolver, role_area):
             t["notas"] = "; ".join(filter(None, [t.get("notas")] + notas_int))
         t["estado"] = normalize_estado(t.get("estado"))
         t["area"] = t.get("area") or role_area(t.get("cargo"))
-        if t["estado"] == "Ex-equipo" and t.get("notas", "").startswith("Foto existe"):
-            t["notas"] = "Ex-equipo (confirmado internamente). Su foto sigue en los assets del tema."
     return team
 
 
@@ -260,6 +262,7 @@ def finish_personal_sheet(ws, columns, n_rows, hdr=4):
         for f, formula in personal_formulas(columns, n).items():
             c = ws.cell(n, L[f], formula)
             c.fill = FORMULA_FILL
+            c.font = FORMULA_FONT
             if f in ("proximo_cumple", "proximo_aniversario", "fecha_ingreso"):
                 c.number_format = "DD/MM/YYYY"
         for f, _, kind in columns:
@@ -270,9 +273,9 @@ def finish_personal_sheet(ws, columns, n_rows, hdr=4):
     for f, label, kind in columns:
         hc = ws.cell(hdr, L[f])
         if kind == "input":
-            hc.fill = PatternFill("solid", fgColor="B8860B")
+            hc.fill = PatternFill("solid", fgColor="8833FF")
         elif kind == "formula":
-            hc.fill = PatternFill("solid", fgColor="4B3A78")
+            hc.fill = PatternFill("solid", fgColor="0F0F0F")
     rules = [("cumple_dia", 1, 31), ("cumple_mes", 1, 12), ("nac_anio", 1940, 2015), ("ing_anio", 2015, 2035),
              ("ing_mes", 1, 12), ("ing_dia", 1, 31)]
     for f, lo, hi in rules:
@@ -284,8 +287,6 @@ def finish_personal_sheet(ws, columns, n_rows, hdr=4):
     for n in range(last + 1, last + 201):  # filas extra editables para altas
         for f, _, kind in columns:
             ws.cell(n, L[f]).protection = Protection(locked=False) if kind != "formula" else Protection(locked=True)
-    ws["A3"] = "Amarillo = por rellenar · Morado = fórmula bloqueada. Hoja protegida sin contraseña (Revisar → Desproteger)."
-    ws["A3"].font = Font(size=9, color="8A6D00")
     protect(ws)
 
 
