@@ -1,0 +1,9 @@
+# Datos de MCR: nunca al repo (contienen datos personales)
+data/
+inputs/
+out/
+*.xlsx
+*.xls
+*.csv
+*.zip
+__pycache__/
