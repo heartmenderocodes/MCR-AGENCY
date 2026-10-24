@@ -37,7 +37,7 @@ import research
 import staff
 from brands import BRAND_RULES, BRAND_PARENTS
 
-VERSION = "0.2.0"
+VERSION = "1.0.0"
 TODAY = dt.date.today()
 
 # ─────────────────────────── utilidades ───────────────────────────
@@ -103,6 +103,44 @@ def clean_url(v):
     return url, note
 
 
+def tidy_url(u):
+    """Quita parámetros de rastreo (?_t=, igsh=, utm_…, hl=, lang=) y fuerza https."""
+    if not u:
+        return u
+    u = re.sub(r"^http://", "https://", str(u).strip())
+    u = u.split("#")[0].split("?")[0]
+    return u if u.lower().startswith("http") else "https://" + u
+
+
+def extra_urls(v):
+    """URLs adicionales distintas de la primera (p. ej. una segunda cuenta en el mismo campo)."""
+    if blank(v):
+        return []
+    found = re.findall(r"(?:https?://)?(?:www\.|m\.)?[a-z0-9.-]+\.[a-z]{2,}/[^\s,]*", str(v), re.I)
+    parts = [x for f in found for x in re.split(r"(?<=.)(?=https?://)", f)]
+    out, seen = [], set()
+    for u in parts:
+        k = url_key(u).split("?")[0]
+        if k and k not in seen:
+            seen.add(k)
+            out.append(u if u.lower().startswith("http") else "https://" + u)
+    return out[1:]
+
+
+def fix_email(v):
+    """Corrige variantes obvias del dominio corporativo (mcr-agencycom, mcr.agency.com…)."""
+    if blank(v):
+        return None
+    e = str(v).strip().lower().replace(" ", "")
+    m = re.fullmatch(r"([^@]+)@(.+)", e)
+    if not m:
+        return e
+    user, dom = m.groups()
+    if re.fullmatch(r"mcr[-.]?agency[.]?(com|co|cm)?\.?", dom) or re.fullmatch(r"mcr[-.]agency\.com", dom):
+        dom = "mcr-agency.com"
+    return f"{user}@{dom}"
+
+
 def url_key(v):
     s = str(v or "").lower().strip()
     s = re.sub(r"^https?://", "", s)
@@ -111,16 +149,25 @@ def url_key(v):
     return s
 
 
-def parse_phone(v):
+PHONE_CC = {"ECU": ("593", 9), "MEX": ("52", 10), "COL": ("57", 10), "PER": ("51", 9), "ESP": ("34", 9),
+            "ARG": ("54", 10), "CHI": ("56", 9), "PAN": ("507", 8), "DOM": ("1", 10), "NIC": ("505", 8)}
+
+
+def parse_phone(v, pais=None):
+    """+código país cuando se puede deducir; si no, se deja como venía (sólo dígitos)."""
     if blank(v):
         return None, None
     if isinstance(v, float):
         v = str(int(v))
     digits = re.sub(r"\D", "", str(v))
     if not digits:
-        return None, f"teléfono no interpretable: {v}"
-    note = "sin código de país aparente" if len(digits) < 10 else None
-    return "+" + digits, note
+        return None, None
+    cc, local_len = PHONE_CC.get(str(pais or "").strip().upper(), (None, None))
+    if len(digits) >= 10 and not (cc and len(digits) == local_len and not digits.startswith(cc)):
+        return "+" + digits, None
+    if cc and len(digits) == local_len:
+        return f"+{cc}{digits}", None
+    return digits, None
 
 
 COUNTRY = {
@@ -462,6 +509,22 @@ ALIASES = {
 }
 
 
+def pick_account(num_c, url_c, src):
+    """Por plataforma: gana la fuente con más seguidores; si no hay cifras o empatan, la de mayor jerarquía.
+    La URL se toma de la misma fuente ganadora."""
+    rows = []
+    for (n, s), (u, s2) in zip(num_c, url_c):
+        rows.append((n, u, s))
+    rows = [r for r in rows if r[0] is not None or r[1]]
+    if not rows:
+        return None, None, None, None
+    rows.sort(key=lambda r: (-(r[0] or -1), src.level(r[2]), -src.date(r[2]).toordinal()))
+    n, u, s = rows[0]
+    if not u:
+        u = next((r[1] for r in rows if r[1]), None)
+    return n, s, u, s
+
+
 def build_creator_index(web_creators):
     idx = {}
     for c in web_creators:
@@ -591,18 +654,18 @@ def consolidate(theme, internals, birthdays, src, resolver, research_rows):
         cats_int = [", ".join(norm_categories(r.get("categorias"))) for s, r in ints]
         cats, cats_src = (cats_int[0], ints[0][0]) if ints and cats_int[0] else (
             ", ".join(wid.get("categories", [])) or None, S_WEB if wid.get("categories") else None)
-        email, email_src = R("correo corporativo", [(str(r.get("email")).strip().lower() if not blank(r.get("email")) else None, s)
+        email, email_src = R("correo corporativo", [(fix_email(r.get("email")), s)
                                                      for s, r in ints]
                              + [((((w or {}).get("contact") or {}).get("corporate_email") or "").lower() or None, S_WEB)])
         tel, tel_note, tel_src = None, None, None
         for s, r in ints:
-            tel, tel_note = parse_phone(r.get("telefono"))
+            tel, tel_note = parse_phone(r.get("telefono"), r.get("pais"))
             if tel:
                 tel_src = s
                 break
         real_name = next((str(r["nombre_real"]).strip() for s, r in ints if not blank(r.get("nombre_real"))), None)
 
-        plat_out = {}
+        plat_out, extras = {}, []
         for p in ("youtube", "tiktok", "instagram", "twitch", "x"):
             num_c, url_c = [], []
             for s, r in ints:
@@ -620,8 +683,9 @@ def consolidate(theme, internals, birthdays, src, resolver, research_rows):
             if wp:
                 num_c.append((wp.get("followers"), S_WEB))
                 url_c.append((wp.get("url"), S_WEB))
-            n, n_src = R(f"{p} · seguidores", num_c, numeric=True)
-            u, u_src = R(f"{p} · url", url_c)
+            n, n_src, u, u_src = pick_account(num_c, url_c, src)
+            u = tidy_url(u)
+            extras += [tidy_url(x) for s_, r in ints for x in extra_urls(r.get(f"{p}_url"))]
             avg = wp.get("avg_views") if wp else None
             plat_out[p] = dict(n=n, n_src=n_src, url=u, url_src=u_src, avg=avg)
             if n is not None or u:
@@ -664,8 +728,14 @@ def consolidate(theme, internals, birthdays, src, resolver, research_rows):
 
         bd = c["bday"]
         dq = (w or {}).get("data_quality", {})
+        names = [r["handle"] for _, r in ints] + ([wid.get("display_name")] if w else []) + ([bd["nombre"]] if bd else [])
+        variants = []
+        for nm in names:
+            if nm and key(nm) != key(name) and key(nm) not in {key(v) for v in variants}:
+                variants.append(nm)
         row = dict(
-            creator_id=cid, nombre_publico=name, fuente_nombre=name_src, nombre_real=real_name,
+            creator_id=cid, nombre_publico=name, variaciones=", ".join(variants) or None, fuente_nombre=name_src,
+            nombre_real=real_name,
             estado_roster=roster, tier=wid.get("tier") or "Sin tier", fuente_tier=S_WEB if wid.get("tier") else None,
             pais=COUNTRY.get(pais_code, (None,))[0] if pais_code else None, iso=COUNTRY.get(pais_code, (None, None))[1] if pais_code else None,
             fuente_pais=pais_src, categorias=cats, fuente_categorias=cats_src,
@@ -675,7 +745,7 @@ def consolidate(theme, internals, birthdays, src, resolver, research_rows):
             correo_en_redes=next((r.get("correo_en_redes") for s, r in ints if not blank(r.get("correo_en_redes"))), None),
             **{f"{p}_seguidores": plat_out[p]["n"] for p in ("youtube", "tiktok", "instagram", "twitch", "x")},
             **{f"{p}_url": plat_out[p]["url"] for p in ("youtube", "tiktok", "instagram", "twitch", "x")},
-            youtube_promedio_views=yt["avg"], youtube_view_rate_pct=yt_rate,
+            youtube_promedio_views=yt["avg"], youtube_view_rate_pct=yt_rate, otras_cuentas=", ".join(dict.fromkeys(extras)) or None,
             alcance_total=reach, plataforma_principal=primary,
             estado_campana=estado_c, campana_vigente=vigente, sin_campana_desde=ult,
             campanas_historicas_n=len(hist_items), marcas_frecuentes=", ".join(f"{b} ({n})" for b, n in top_brands) or None,
@@ -843,8 +913,7 @@ SH = dict(idx="00_Índice", res="01_Resumen", agencia="02_Agencia", cifras="03_C
           crono="04_Cronología", equipo="05_Equipo", p_staff="06_Personal_Staff", p_creadores="07_Personal_Creadores",
           creadores="08_Creadores", plataformas="09_Plataformas", audiencia="10_Audiencia",
           campanas="11_Campañas_Creador", marcas="12_Marcas", portafolio="13_Portafolio", prensa="14_Prensa_Premios",
-          assets="15_Assets", web="16_Correcciones_Web", conflictos="17_Conflictos", pendientes="18_Pendientes",
-          mapeo="19_Mapeo_IDs", fuentes="20_Fuentes")
+          assets="15_Assets", fuentes="16_Fuentes")
 
 
 def write_book(out, ctx):
@@ -869,16 +938,14 @@ def write_book(out, ctx):
                  ("fuente", "Fuente"), ("nivel", "Nivel")),
             ctx["timeline"], widths=dict(hito=80), date_cols=("fecha",), wrap_cols=("hito",))
 
-    b.sheet(SH["equipo"], "Equipo", "Web (nivel 2) corregida con el staff interno (nivel 1): altas, bajas y cargos.",
+    b.sheet(SH["equipo"], "Equipo", "Equipo actual de MCR.",
             cols(("person_id", "ID"), ("nombre", "Nombre"), ("cargo", "Cargo"), ("area", "Área"), ("nivel_org", "Nivel"),
-                 ("estado", "Estado"), ("salida", "Fecha salida"), ("foto", "Foto"), ("fuente", "Fuente alta"),
-                 ("fuente_cargo", "Fuente cargo"), ("fuente_estado", "Fuente estado"), ("notas", "Notas")),
-            sorted(ctx["team"], key=lambda t: ({"Activo": 0, "Por confirmar": 1, "Ex-equipo": 2}[t["estado"]], t["person_id"])),
-            widths=dict(nombre=24, cargo=34, notas=50), date_cols=("salida",))
+                 ("foto", "Foto"), ("notas", "Notas")),
+            ctx["team"], widths=dict(nombre=24, cargo=34, notas=50))
 
     for key_, title, desc, columns, rows in (
         ("p_staff", "Información personal · staff",
-         "Cumpleaños, edad, antigüedad y aniversario del equipo. Activos primero, ex-equipo al final (sin aniversario).",
+         "Cumpleaños, edad, antigüedad y aniversario del equipo. RR. HH. llena las celdas amarillas.",
          staff.STAFF_PERSONAL_COLS, ctx["staff_personal"]),
         ("p_creadores", "Información personal · creadores",
          "Cumpleaños y antigüedad en MCR (desde la firma). La firma se captura en las celdas amarillas.",
@@ -891,18 +958,16 @@ def write_book(out, ctx):
     b.sheet(SH["creadores"], "Creadores · maestra",
             "Una fila por creador. Los valores siguen la jerarquía Interno > Oficial > Externo; la columna fuente_* dice quién ganó.",
             ctx["creator_cols"], ctx["creators"],
-            widths=dict(nombre_publico=20, nombre_real=26, estado_roster=26, categorias=24, bio=60, campana_vigente=34,
+            widths=dict(nombre_publico=20, variaciones=24, nombre_real=26, otras_cuentas=36, categorias=24, bio=60, campana_vigente=34,
                         marcas_frecuentes=40, correo=30, notas_internas=40),
-            link_cols=("youtube_url", "tiktok_url", "instagram_url", "twitch_url", "x_url", "kick_url"),
+            link_cols=("youtube_url", "tiktok_url", "instagram_url", "twitch_url", "x_url", "kick_url", "otras_cuentas"),
             int_cols=tuple(f"{p}_seguidores" for p in ("youtube", "tiktok", "instagram", "twitch", "x", "kick"))
             + ("alcance_total", "youtube_promedio_views"),
             pct_cols=("youtube_view_rate_pct",), date_cols=("sin_campana_desde",))
 
     b.sheet(SH["plataformas"], "Creadores × plataforma", "Formato largo para tablas dinámicas.",
             cols(("creator_id", "creator_id"), ("creador", "Creador"), ("plataforma", "Plataforma"), ("url", "URL"),
-                 ("seguidores", "Seguidores"), ("fuente_seguidores", "Fuente seguidores"),
-                 ("promedio_views", "Promedio views"), ("fuente_views", "Fuente views"), ("principal", "Principal"),
-                 ("fuente_url", "Fuente URL")),
+                 ("seguidores", "Seguidores"), ("promedio_views", "Promedio views"), ("principal", "Principal")),
             ctx["platforms"], link_cols=("url",), int_cols=("seguidores", "promedio_views"), widths=dict(url=44))
 
     b.sheet(SH["audiencia"], "Audiencia", "Distribuciones de audiencia disponibles (media kits procesados en la web).",
@@ -945,34 +1010,10 @@ def write_book(out, ctx):
                  ("ruta", "Ruta")),
             ctx["assets"], widths=dict(archivo=34, usado_en=40, ruta=44))
 
-    b.sheet(SH["web"], "Correcciones para la web",
-            "Datos del sitio que el roster interno contradice. Valor correcto = interno (nivel 1).",
-            cols(("creator_id", "creator_id"), ("creador", "Creador"), ("campo", "Campo"), ("en_web", "Hoy en la web"),
-                 ("correcto", "Valor correcto"), ("fuente", "Fuente"), ("diferencia_pct", "Dif. %"), ("severidad", "Severidad")),
-            ctx["web_fixes"], widths=dict(en_web=40, correcto=40), int_cols=("en_web", "correcto"), pct_cols=("diferencia_pct",))
-
-    b.sheet(SH["conflictos"], "Conflictos entre fuentes",
-            "Cada valor descartado por la jerarquía. Filtra por severidad para revisar lo importante.",
-            cols(("entidad", "Entidad"), ("entidad_id", "ID"), ("campo", "Campo"), ("valor_ganador", "Valor ganador"),
-                 ("fuente_ganadora", "Fuente ganadora"), ("nivel_ganador", "Nivel ganador"),
-                 ("valor_descartado", "Valor descartado"), ("fuente_descartada", "Fuente descartada"),
-                 ("nivel_descartado", "Nivel descartado"), ("diferencia_pct", "Dif. %"), ("severidad", "Severidad")),
-            ctx["conflicts"], widths=dict(valor_ganador=36, valor_descartado=36), pct_cols=("diferencia_pct",))
-
-    b.sheet(SH["pendientes"], "Pendientes", "Lo que falta o no cuadra, por prioridad, con la acción sugerida.",
-            cols(("prioridad", "Prioridad"), ("area", "Área"), ("entidad", "Entidad"), ("problema", "Problema"),
-                 ("detalle", "Detalle"), ("accion", "Acción")),
-            ctx["gaps"], widths=dict(problema=44, detalle=50, accion=44))
-
-    b.sheet(SH["mapeo"], "Mapeo de IDs", "Cómo se llama cada creador en cada fuente y cómo se emparejó.",
-            cols(("creator_id", "creator_id"), ("fuente", "Fuente"), ("nombre_en_fuente", "Nombre en la fuente"),
-                 ("metodo", "Método de match"), ("fila", "Fila origen")),
-            ctx["mapping"], widths=dict(metodo=44))
-
     b.sheet(SH["fuentes"], "Fuentes", "Registro de fuentes y su nivel en la jerarquía.",
             cols(("id", "ID"), ("nombre", "Fuente"), ("nivel", "Nivel"), ("tipo", "Tipo"), ("ubicacion", "Ubicación"),
                  ("fecha", "Fecha"), ("notas", "Notas")),
-            [dict(r, nivel=NIVEL_LABEL[r["nivel"]]) for r in src.rows.values()],
+            [dict(r, nivel=NIVEL_LABEL[r["nivel"]]) for r in src.rows.values() if not r["id"].startswith(("S3", "S4"))],
             widths=dict(nombre=44, ubicacion=60, notas=50), link_cols=("ubicacion",), date_cols=("fecha",))
 
     write_summary(res, ctx)
@@ -993,30 +1034,21 @@ def write_summary(ws, ctx):
     blocks = [
         ("Creadores", [
             ("Total en la base", f"=COUNTA({rng('creator_id')})"),
-            ("Interno + web", f'=COUNTIF({rng("estado_roster")},"Interno + web")'),
-            ("Sólo interno", f'=COUNTIF({rng("estado_roster")},"Sólo interno*")'),
-            ("Sólo web (verificar baja)", f'=COUNTIF({rng("estado_roster")},"Sólo web*")'),
+            ("Publicados en la web", f'=COUNTIF({rng("en_web")},"Sí")'),
+            ("Sin publicar en la web", f'=COUNTIF({rng("en_web")},"No")'),
             ("Con campaña", f'=COUNTIF({rng("estado_campana")},"Con campaña")'),
             ("Con cumpleaños", f"=COUNT({rng('cumple_dia')})"),
             ("Alcance total sumado", f"=SUM({rng('alcance_total')})"),
         ]),
-        ("Por tier", [(t, f'=COUNTIF({rng("tier")},"{t}")') for t in ("AAA", "Mid", "Rising", "Sin tier")]),
+        ("Por tier", [(t, f'=COUNTIF({rng("tier")},"{t}")') for t in ("AAA", "Mid", "Rising")]),
         ("Por país", [(p, f'=COUNTIF({rng("pais")},"{p}")')
                       for p, _ in Counter(c["pais"] for c in ctx["creators"] if c["pais"]).most_common()]),
-        ("Calidad", [
-            ("Conflictos registrados", f"=COUNTA('{SH['conflictos']}'!$A$5:$A$5000)"),
-            ("Conflictos severidad alta", f"=COUNTIF('{SH['conflictos']}'!$K$5:$K$5000,\"Alta\")"),
-            ("Correcciones para la web", f"=COUNTA('{SH['web']}'!$A$5:$A$5000)"),
-            ("Pendientes · prioridad alta", f"=COUNTIF('{SH['pendientes']}'!$A$5:$A$5000,\"Alta\")"),
-            ("Pendientes · total", f"=COUNTA('{SH['pendientes']}'!$A$5:$A$5000)"),
-        ]),
         ("Equipo y otros", [
-            ("Equipo activo", f"=COUNTIF('{SH['equipo']}'!$F$5:$F$500,\"Activo\")"),
-            ("Ex-equipo", f"=COUNTIF('{SH['equipo']}'!$F$5:$F$500,\"Ex-equipo\")"),
+            ("Equipo", f"=COUNTA('{SH['equipo']}'!$A$5:$A$500)"),
             ("Cumpleaños en los próximos 30 días (staff)",
-             f"=COUNTIFS('{SH['p_staff']}'!$K$5:$K$500,\">=0\",'{SH['p_staff']}'!$K$5:$K$500,\"<=30\")"),
+             f"=COUNTIFS('{SH['p_staff']}'!$J$5:$J$500,\">=0\",'{SH['p_staff']}'!$J$5:$J$500,\"<=30\")"),
             ("Cumpleaños en los próximos 30 días (creadores)",
-             f"=COUNTIFS('{SH['p_creadores']}'!$M$5:$M$500,\">=0\",'{SH['p_creadores']}'!$M$5:$M$500,\"<=30\")"),
+             f"=COUNTIFS('{SH['p_creadores']}'!$L$5:$L$500,\">=0\",'{SH['p_creadores']}'!$L$5:$L$500,\"<=30\")"),
             ("Marcas", f"=COUNTA('{SH['marcas']}'!$A$5:$A$1000)"),
             ("Casos de portafolio", f"=COUNTA('{SH['portafolio']}'!$A$5:$A$500)"),
             ("Menciones de campañas", f"=COUNTA('{SH['campanas']}'!$A$5:$A$10000)"),
@@ -1049,10 +1081,10 @@ def write_index(ws, b, ctx):
     ws["A4"] = "Jerarquía ante datos contradictorios"
     ws["A4"].font = Font(bold=True, size=12)
     rules = [
-        ("1 · Interno", "Archivos internos de MCR (roster interno, calendarios, nóminas…). Siempre gana."),
-        ("2 · Oficial", "Tema web / mcr-agency.com / comunicados propios. Complementa lo que el interno no tiene."),
+        ("1 · Interno", "Información interna de MCR (este documento, roster interno, RR. HH.). Siempre gana."),
+        ("2 · Oficial", "mcr-agency.com y comunicados propios. Complementa lo que el interno no tiene."),
         ("3 · Externo", "Prensa, directorios, referencias generales. Sólo llena huecos."),
-        ("Empate", "Mismo nivel: gana la fuente más reciente. Todo lo descartado queda en 15_Conflictos."),
+        ("Seguidores", "Excepción: gana la cuenta con más seguidores; sin cifra, la del interno."),
     ]
     for i, (k, v) in enumerate(rules, 5):
         c = ws.cell(i, 1, k)
@@ -1141,6 +1173,16 @@ def main():
         src.add("S40", "Captura manual en el maestro previo", 1, "Excel maestro", os.path.basename(args.previo),
                 dt.date.fromtimestamp(os.path.getmtime(args.previo)), "Celdas amarillas de las hojas de información personal.")
 
+    # creadores que sólo están en la web: se asume que ya no están en MCR
+    gone = {m["creator_id"] for m in master if m["estado_roster"].startswith("Sólo web")}
+    master = [m for m in master if m["creator_id"] not in gone]
+    plats = [x for x in plats if x["creator_id"] not in gone]
+    aud = [x for x in aud if x["creator_id"] not in gone]
+    camps = [x for x in camps if x["creator_id"] not in gone]
+    for m in master:
+        m["en_web"] = "Sí" if m["estado_roster"] == "Interno + web" else "No"
+        if m["tier"] == "Sin tier":
+            m["tier"] = tier_for_reach(m["alcance_total"])
     apply_creator_adjustments(master, adjustments, resolver, gaps)
     fix_platform_labels(master, plats, gaps)
     flag_suspicious_counts(master, gaps)
@@ -1185,6 +1227,9 @@ def main():
             gaps.append(dict(area="Info personal", entidad=t["nombre"], problema="Ingreso sólo con año",
                              detalle=f"{t['ing_anio']}", accion="Plantilla RH: mes y día para calcular el aniversario"))
 
+    team = [t for t in team if t["estado"] != "Ex-equipo"]
+    for t in team:
+        t["notas"] = None
     staff_rows = staff.staff_personal_rows(team)
     creator_personal = staff.creator_personal_rows(master, prev_creators)
 
@@ -1215,6 +1260,10 @@ def main():
         for a in (c["assets"] or "").split(", "):
             if a:
                 case_by_asset.setdefault(a, c["case_id"])
+    keep_photos = {t["foto"] for t in team if t.get("foto")}
+    gone_portraits = {c["identity"].get("portrait_asset") for c in theme["private"]["creators"] if c["creator_id"] in gone}
+    assets = [a for a in assets if not ((a["archivo"].startswith("TEAM_") and a["archivo"] not in keep_photos)
+                                        or a["archivo"] in gone_portraits)]
     for i, a in enumerate(assets, 1):
         a["asset_id"] = f"A{i:03d}"
         a["entidad"] = (creator_by_asset.get(a["archivo"]) or team_by_asset.get(a["archivo"])
@@ -1229,8 +1278,6 @@ def main():
     for g in gaps:
         g["prioridad"] = gap_priority(g)
     gaps.sort(key=lambda g: ({"Alta": 0, "Media": 1, "Baja": 2}[g["prioridad"]], g["area"], str(g["entidad"])))
-    staff.write_rh_template(os.path.join(os.path.dirname(os.path.abspath(args.out)), "PLANTILLA_RH_STAFF.xlsx"),
-                            team, VERSION)
     ctx = dict(
         src=src, agency=research.agency_rows(src), figures=research.figures(src), timeline=research.timeline(src),
         team=team, staff_personal=staff_rows, creator_personal=creator_personal, creators=master, creator_cols=CREATOR_COLS,
@@ -1238,15 +1285,12 @@ def main():
         platforms=plats, audience=aud, campaigns_creator=camps, brands=brands, cases=case_rows, press=press,
         assets=assets, conflicts=resolver.conflicts, gaps=gaps, mapping=mapping,
         notes=[
-            "Datos personales (nombres reales, teléfonos, cumpleaños): no subir este archivo a repositorios ni carpetas públicas.",
-            "Los tokens de acceso de los perfiles privados del tema NO se incluyen: son la llave de páginas noindex.",
-            "Conteos de seguidores del roster interno vienen escritos a mano; se normalizan y los dudosos van a 18_Pendientes.",
-            "Hojas de información personal: amarillo = captura, morado = fórmula bloqueada. Protegidas sin contraseña.",
-            "Lo capturado a mano en celdas amarillas se conserva al regenerar (opción --previo).",
-            "Staff: PLANTILLA_RH_STAFF.xlsx va a RR. HH.; al regresar llena se deja en la carpeta interna y entra como nivel 1.",
-            "Promedio de views, bio, tier y audiencia sólo existen en la web (nivel 2), así que se toman de ahí.",
-            "Empresa matriz de cada marca es referencia general (nivel 3): verificar antes de usar en un pitch.",
-            "Para actualizar: correr tools/build_master.py con las fuentes nuevas; fuera de las celdas amarillas no se edita a mano.",
+            "Documento de trabajo del equipo: aquí se captura y se consulta todo. Celda vacía = dato por rellenar.",
+            "Información personal: amarillo = por rellenar, morado = fórmula bloqueada (hoja protegida sin contraseña).",
+            "Uso interno: contiene nombres reales, teléfonos y cumpleaños. No compartir fuera de MCR.",
+            "Seguidores: por plataforma se toma la cuenta con más seguidores; si no hay cifra, la del roster interno.",
+            "Tier de creadores sin tier en la web: por alcance total (AAA ≥ 12M · Mid ≥ 4M · Rising < 4M).",
+            "Empresa matriz de cada marca es referencia general: verificar antes de usarla en un pitch.",
         ])
     write_book(args.out, ctx)
     print(f"OK · {args.out}")
@@ -1273,23 +1317,21 @@ def role_area(cargo):
 
 
 CREATOR_COLS = [
-    ("creator_id", "creator_id"), ("nombre_publico", "Creador"), ("nombre_real", "Nombre real"),
-    ("estado_roster", "Estado roster"), ("tier", "Tier"), ("pais", "País"), ("iso", "ISO"),
-    ("categorias", "Categorías"), ("cumple_dia", "Cumple día"), ("cumple_mes", "Cumple mes"),
+    ("creator_id", "creator_id"), ("nombre_publico", "Creador"), ("variaciones", "Variaciones de nombre"),
+    ("nombre_real", "Nombre real"), ("nombre_compartido", "Nombre real compartido"), ("tier", "Tier"),
+    ("en_web", "Publicado en web"), ("pais", "País"), ("iso", "ISO"), ("categorias", "Categorías"),
+    ("cumple_dia", "Cumple día"), ("cumple_mes", "Cumple mes"),
     ("correo", "Correo corporativo"), ("telefono", "Teléfono"), ("correo_en_redes", "Correo en redes"),
     ("youtube_seguidores", "YouTube"), ("tiktok_seguidores", "TikTok"), ("instagram_seguidores", "Instagram"),
-    ("twitch_seguidores", "Twitch"), ("x_seguidores", "X"), ("alcance_total", "Alcance total"),
+    ("twitch_seguidores", "Twitch"), ("x_seguidores", "X"), ("kick_seguidores", "Kick"), ("alcance_total", "Alcance total"),
     ("plataforma_principal", "Plataforma principal"), ("youtube_promedio_views", "YT prom. views"),
     ("youtube_view_rate_pct", "YT view rate %"), ("estado_campana", "Estado campaña"),
     ("campana_vigente", "Campaña vigente / última"), ("sin_campana_desde", "Sin campaña desde"),
     ("campanas_historicas_n", "Campañas históricas"), ("marcas_frecuentes", "Marcas frecuentes"),
     ("youtube_url", "URL YouTube"), ("tiktok_url", "URL TikTok"), ("instagram_url", "URL Instagram"),
-    ("twitch_url", "URL Twitch"), ("x_url", "URL X"), ("kick_url", "URL Kick"), ("kick_seguidores", "Kick"),
-    ("nombre_compartido", "Nombre real compartido"), ("notas_internas", "Notas internas"), ("bio", "Bio (web)"), ("retrato", "Retrato"),
-    ("audiencia_estado", "Audiencia"), ("media_kit", "Media kit"), ("stream", "Stream en"),
-    ("categorias_web", "Categorías (web)"), ("fuente_nombre", "Fuente nombre"), ("fuente_pais", "Fuente país"),
-    ("fuente_categorias", "Fuente categorías"), ("fuente_correo", "Fuente correo"),
-    ("fuente_telefono", "Fuente teléfono"), ("fuente_tier", "Fuente tier"), ("datos_web_generados", "Datos web al"),
+    ("twitch_url", "URL Twitch"), ("x_url", "URL X"), ("kick_url", "URL Kick"), ("otras_cuentas", "Otras cuentas"),
+    ("bio", "Bio"), ("retrato", "Retrato"), ("media_kit", "Media kit"), ("stream", "Stream en"),
+    ("categorias_web", "Categorías (web)"), ("notas_internas", "Notas"),
 ]
 
 
@@ -1329,12 +1371,24 @@ def fix_platform_labels(master, plats, gaps):
         url = m.get("twitch_url") or ""
         if "kick.com" in url.lower():
             m["kick_url"], m["kick_seguidores"] = url, m.get("twitch_seguidores")
+            m["plataforma_principal"] = "kick" if m.get("plataforma_principal") == "twitch" else m.get("plataforma_principal")
             m["twitch_url"], m["twitch_seguidores"] = None, None
             for p in plats:
                 if p["creator_id"] == m["creator_id"] and p["plataforma"] == "twitch":
                     p["plataforma"] = "kick"
             gaps.append(dict(area="Creadores", entidad=m["creator_id"], problema="URL de Kick en la columna Twitch",
                              detalle=url, accion="Reclasificado como Kick; mover a su columna en CREADORES_INTERNOS"))
+
+
+def tier_for_reach(reach):
+    """Umbrales derivados de los tiers que ya asignó la web (alcance sumado, sin deduplicar)."""
+    if not reach:
+        return None
+    if reach >= 12_000_000:
+        return "AAA"
+    if reach >= 4_000_000:
+        return "Mid"
+    return "Rising"
 
 
 def flag_suspicious_counts(master, gaps):

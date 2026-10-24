@@ -17,7 +17,11 @@ Requiere `php` (para leer los datasets del tema), `openpyxl`, `beautifulsoup4` y
 2. **Oficial**: tema web, mcr-agency.com y comunicados propios.
 3. **Externo**: prensa, directorios y referencias generales.
 
-En el mismo nivel gana la fuente más reciente. Cada valor descartado queda en la hoja `15_Conflictos`.
+En el mismo nivel gana la fuente más reciente. Excepción, seguidores: por plataforma gana la cuenta con más
+seguidores; si no hay cifra, la del interno.
+
+El resultado es un solo documento de trabajo. Para regenerarlo sin perder lo capturado en las celdas
+amarillas, pasa el maestro vigente con `--previo`.
 
 ## Archivos
 
@@ -25,5 +29,6 @@ En el mismo nivel gana la fuente más reciente. Cada valor descartado queda en l
 - `export_theme_data.php`: exporta los datasets PHP del tema a JSON.
 - `brands.py`: reglas para clasificar campañas por marca y el mapa de empresas matriz.
 - `research.py`: investigación pública (sitio, comunicados, prensa).
+- `staff.py`: equipo, ajustes internos y hojas de información personal.
 
 **Los datos no van al repo.** El repo es público y el Excel trae nombres reales, teléfonos y cumpleaños; `.gitignore` bloquea `*.xlsx`, `*.zip` y las carpetas de datos.
