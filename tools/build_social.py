@@ -32,7 +32,8 @@ TIPOS = ["Repost", "Trabajo con marcas", "Activaciones en vivo", "Eventos de cre
 ESTADOS = ["Por definir", "En diseño", "En revisión", "Aprobado", "Programado", "Publicado", "Cancelado"]
 APROBACION = ["Pendiente", "Aprobado", "Cambios solicitados"]
 SOLICITANTES = ["Sergi Cerrato", "Jocelyn Santiago", "Dulce Valentín"]
-DISENO = ["Sergio Barranco", "Diego Galaviz", "Rafael", "Kevin Moss"]
+LIDER_DISENO = "Sergio Barranco"
+DISENO = ["Sergio Barranco", "Elena", "Diego Galaviz", "Diseñador 3 (por contratar)"]
 RESPONSABLES = ["Dulce Valentín", "Jocelyn Santiago", "Sergi Cerrato", "Sergio Barranco", "Kevin Moss"]
 PRIORIDAD = ["Baja", "Media", "Alta", "Urgente"]
 STATUS_DISENO = ["En espera", "En proceso", "En revisión", "Cambios", "Aprobado", "Terminada", "Bloqueo"]
@@ -149,7 +150,7 @@ def sheet_marca(wb, co):
     equipo = {e["Nombre"]: e for e in co["equipo"]}
     voces = [("Sergi Cerrato", "Vocero · artículos y pláticas"), ("Jocelyn Santiago", "PR · aprueba todo lo que cruza a LinkedIn"),
              ("Dulce Valentín", "Community Manager · operación diaria de redes"),
-             ("Sergio Barranco", "Lead Designer · recibe las solicitudes de diseño"),
+             ("Sergio Barranco", "Líder de diseño · recibe y asigna las solicitudes de diseño"),
              ("Kevin Moss", "Foto y video de activaciones y eventos")]
     r = section(ws, r, "Quién es quién en social", 5)
     mini_table(ws, r, ["Persona", "Cargo", "Rol en social"],
@@ -196,10 +197,11 @@ def sheet_linea(wb):
     r = section(ws, r, "Flujo", 6)
     mini_table(ws, r, ["Paso", "Quién", "Dónde"], [
         ("1. Solicitud de diseño", "Sergi, Jocelyn o Dulce", "10_Solicitudes_Diseño"),
-        ("2. Diseño", "Sergio Barranco y equipo de diseño", "10_Solicitudes_Diseño · Status"),
-        ("3. Revisión", "Quien solicitó", "10_Solicitudes_Diseño · Notas / correcciones"),
-        ("4. Aprobación PR (si cruza a LinkedIn)", "Jocelyn Santiago", "Calendario · Aprobación PR"),
-        ("5. Programación y publicación", "Dulce Valentín", "Calendario · Estado"),
+        ("2. Asignación", "Sergio Barranco (líder de diseño)", "10_Solicitudes_Diseño · Asignado a"),
+        ("3. Diseño", "Sergio, Elena, Diego Galaviz o diseñador 3", "10_Solicitudes_Diseño · Status"),
+        ("4. Revisión", "Quien solicitó", "10_Solicitudes_Diseño · Notas / correcciones"),
+        ("5. Aprobación PR (si cruza a LinkedIn)", "Jocelyn Santiago", "Calendario · Aprobación PR"),
+        ("6. Programación y publicación", "Dulce Valentín", "Calendario · Estado"),
     ])
     for col, w in zip("ABCDEF", (30, 46, 28, 22, 24, 22)):
         ws.column_dimensions[col].width = w
@@ -322,7 +324,7 @@ def sheet_requests(wb, name, n=300):
     for k in range(n):
         r = hdr + 1 + k
         for i, (f, _, _) in enumerate(REQ_COLS, 1):
-            v = f"DS-{k + 1:03d}" if f == "id" else None
+            v = f"DS-{k + 1:03d}" if f == "id" else LIDER_DISENO if f == "para" else None
             x = cell(ws, r, i, v, color=MUTED if f == "id" else BLACK, wrap=f in ("descripcion", "copy", "notas"))
             x.border = Border(bottom=THIN)
             if f.startswith("f_"):
@@ -335,7 +337,7 @@ def sheet_requests(wb, name, n=300):
     ws.row_dimensions[hdr].height = 30
     rng = lambda f: f"{L[f]}{hdr + 1}:{L[f]}{last}"
     for f, opts in (("tipo", TIPOS), ("plataforma", PLATAFORMAS), ("formato", FORMATOS), ("solicita", SOLICITANTES),
-                    ("para", DISENO), ("asignado", DISENO), ("prioridad", PRIORIDAD), ("medidas", MEDIDAS),
+                    ("para", [LIDER_DISENO]), ("asignado", DISENO), ("prioridad", PRIORIDAD), ("medidas", MEDIDAS),
                     ("linkedin", ["Sí", "No"]), ("aprobacion", APROBACION), ("status", STATUS_DISENO)):
         dv_list(ws, rng(f), opts)
     colors = {"Urgente": ("FFD9D9", "B00020"), "Alta": ("FFE8CC", "8A4B00"), "Terminada": ("D6F8E9", "00794A"),
