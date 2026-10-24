@@ -1167,7 +1167,7 @@ def main():
 
     # ajustes internos (hojas Staff / Ajustes_Creadores) y maestro previo
     adj_files = [f for f in files if f not in roster_files and f not in bday_files]
-    staff_raw, adjustments, nicknames = staff.load_internal_adjustments(adj_files)
+    staff_raw, adjustments, nicknames, org_extra = staff.load_internal_adjustments(adj_files)
     staff_sources = []
     for n, (f, rows) in enumerate(staff_raw, 1):
         sid = src.add(f"S3{n}", f"Staff interno · {os.path.basename(f)}", 1, "Excel interno", os.path.basename(f),
@@ -1244,7 +1244,11 @@ def main():
                if staff.normalize_estado(r.get("estado")) == "Ex-equipo"}
     ex_keys |= {staff.key(str(r["nombre"]).split()[0]) for _, rows in staff_sources for r in rows
                 if staff.normalize_estado(r.get("estado")) == "Ex-equipo" and len(str(r["nombre"]).split()) > 1}
-    org_rows = merge_org(team, org_files[-1], nicknames, ex_keys) if org_files else []
+    org_rows = merge_org(team, org_files[-1], nicknames, ex_keys, org_extra) if org_files else []
+    for i, t in enumerate(team, 1):
+        t["person_id"] = f"P{i:03d}"
+    for r in org_rows:
+        r["person_id"] = r.pop("_person")["person_id"]
     staff_rows = staff.staff_personal_rows(team)
     creator_personal = staff.creator_personal_rows(master, prev_creators)
 
@@ -1402,9 +1406,15 @@ def fix_platform_labels(master, plats, gaps):
 ORG_AREA = {"Dirección": "Dirección", "Soporte transversal": "Soporte transversal", "Operaciones": "Operaciones"}
 
 
-def merge_org(team, path, nicknames, ex_keys):
-    """Cruza el organigrama con el equipo: cuentas, verticales, rol en cada cuenta, modalidad y junta directiva."""
+def merge_org(team, path, nicknames, ex_keys, extra=()):
+    """Cruza el organigrama con el equipo: cuentas, verticales, rol en cada cuenta, modalidad y junta directiva.
+    `extra` son filas internas que completan el organigrama (personas que no aparecen en el HTML)."""
     rows, board = org.load_org(path)
+    for e in extra:
+        rows.append(dict(bloque=e.get("bloque") or "Operaciones", cuenta=e.get("cuenta"), vertical=e.get("vertical"),
+                         subvertical=None, apodo=e["nombre"], rol=e.get("rol"),
+                         lidera=str(e.get("lidera") or "").lower() in ("sí", "si"), modalidad=e.get("modalidad"),
+                         detalle=None))
     out = []
     for t in team:
         t["area"] = None  # el área sale del organigrama; quien no aparece queda por rellenar
@@ -1416,7 +1426,7 @@ def merge_org(team, path, nicknames, ex_keys):
             person = dict(person_id=f"P{len(team) + 1:03d}", nombre=r["apodo"],
                           cargo=(r["rol"] or "").split(" · ")[0] or None, nivel_org="Equipo")
             team.append(person)
-        r["person_id"], r["persona"] = person["person_id"], person["nombre"]
+        r["person_id"], r["persona"], r["_person"] = person["person_id"], person["nombre"], person
         out.append(r)
     for t in team:
         mine = [r for r in out if r["person_id"] == t["person_id"]]

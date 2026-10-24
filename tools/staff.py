@@ -51,8 +51,8 @@ def _int(v):
 
 
 def load_internal_adjustments(paths):
-    """Devuelve (staff_sources, creator_adjustments, apodos). Cada staff_source = (path, filas)."""
-    staff, adjustments, nicknames = [], [], {}
+    """Devuelve (staff_sources, creator_adjustments, apodos, filas extra de organigrama)."""
+    staff, adjustments, nicknames, org_extra = [], [], {}, []
     for path in paths:
         wb = openpyxl.load_workbook(path, data_only=True)
         for ws in wb.worksheets:
@@ -79,6 +79,14 @@ def load_internal_adjustments(paths):
                     a, n = ws.cell(r, cols["apodo"]).value, ws.cell(r, cols["nombre"]).value
                     if a and n:
                         nicknames[key(a)] = str(n).strip()
+            elif title.startswith("organigrama"):
+                names = {"NOMBRE": "nombre", "BLOQUE": "bloque", "CUENTA": "cuenta", "VERTICAL": "vertical", "ROL": "rol",
+                         "MODALIDAD": "modalidad", "LIDERA": "lidera"}
+                hr, cols = _header_map(ws, names, "NOMBRE")
+                for r in range(hr + 1, ws.max_row + 1) if hr else ():
+                    row = {k: ws.cell(r, c).value for k, c in cols.items()}
+                    if row.get("nombre"):
+                        org_extra.append(row)
             elif title.startswith("ajustes"):
                 hr, cols = _header_map(ws, {"CREATOR_ID": "creator_id", "CAMPO": "campo", "VALOR": "valor",
                                             "MOTIVO": "motivo"}, "CREATOR_ID")
@@ -91,7 +99,7 @@ def load_internal_adjustments(paths):
                                                 valor=ws.cell(r, cols["valor"]).value,
                                                 motivo=ws.cell(r, cols.get("motivo", 0)).value if cols.get("motivo") else None,
                                                 fuente=os.path.basename(path)))
-    return staff, adjustments, nicknames
+    return staff, adjustments, nicknames, org_extra
 
 
 def load_previous_master(path):
