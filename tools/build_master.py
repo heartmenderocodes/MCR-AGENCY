@@ -34,14 +34,16 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 import research
+import staff
 from brands import BRAND_RULES, BRAND_PARENTS
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 TODAY = dt.date.today()
 
 # ─────────────────────────── utilidades ───────────────────────────
 
 def strip_accents(s):
+    s = unicodedata.normalize("NFKC", s)  # letras "estilizadas" (𝙋𝙀𝙎𝘼…) → ASCII
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
 
 
@@ -837,86 +839,99 @@ def cols(*pairs):
     return list(pairs)
 
 
+SH = dict(idx="00_Índice", res="01_Resumen", agencia="02_Agencia", cifras="03_Cifras_declaradas",
+          crono="04_Cronología", equipo="05_Equipo", p_staff="06_Personal_Staff", p_creadores="07_Personal_Creadores",
+          creadores="08_Creadores", plataformas="09_Plataformas", audiencia="10_Audiencia",
+          campanas="11_Campañas_Creador", marcas="12_Marcas", portafolio="13_Portafolio", prensa="14_Prensa_Premios",
+          assets="15_Assets", web="16_Correcciones_Web", conflictos="17_Conflictos", pendientes="18_Pendientes",
+          mapeo="19_Mapeo_IDs", fuentes="20_Fuentes")
+
+
 def write_book(out, ctx):
     b = Book()
     src = ctx["src"]
+    idx_ws = b.wb.create_sheet(SH["idx"])
+    res = b.wb.create_sheet(SH["res"])
 
-    # 00 índice (se llena al final)
-    idx_ws = b.wb.create_sheet("00_Índice")
-
-    # 01 resumen con fórmulas vivas
-    res = b.wb.create_sheet("01_Resumen")
-
-    b.sheet("02_Agencia", "Ficha de la agencia", "Datos corporativos. Las cifras declaradas van por fuente y fecha.",
+    b.sheet(SH["agencia"], "Ficha de la agencia", "Datos corporativos. Las cifras declaradas van por fuente y fecha.",
             cols(("campo", "Campo"), ("valor", "Valor"), ("fuente", "Fuente"), ("nivel", "Nivel"), ("fecha", "Fecha"),
                  ("notas", "Notas")),
             ctx["agency"], widths=dict(campo=30, valor=60, notas=50), date_cols=("fecha",), wrap_cols=("valor", "notas"))
 
-    b.sheet("03_Cifras_declaradas", "Cifras declaradas por fuente",
+    b.sheet(SH["cifras"], "Cifras declaradas por fuente",
             "Cada cifra pública de la agencia con su fecha. Sirve para ver evolución y contradicciones.",
             cols(("metrica", "Métrica"), ("valor", "Valor"), ("fecha", "Fecha"), ("fuente", "Fuente"),
                  ("nivel", "Nivel"), ("notas", "Notas")),
             ctx["figures"], widths=dict(metrica=32, valor=22, notas=50), date_cols=("fecha",))
 
-    b.sheet("04_Cronología", "Cronología", "Hitos de la agencia 2019 → hoy.",
+    b.sheet(SH["crono"], "Cronología", "Hitos de la agencia 2019 → hoy.",
             cols(("fecha", "Fecha"), ("anio", "Año"), ("hito", "Hito"), ("categoria", "Categoría"),
                  ("fuente", "Fuente"), ("nivel", "Nivel")),
             ctx["timeline"], widths=dict(hito=80), date_cols=("fecha",), wrap_cols=("hito",))
 
-    b.sheet("05_Equipo", "Equipo", "Personal de MCR según la web (nivel 2) y huecos detectados.",
+    b.sheet(SH["equipo"], "Equipo", "Web (nivel 2) corregida con el staff interno (nivel 1): altas, bajas y cargos.",
             cols(("person_id", "ID"), ("nombre", "Nombre"), ("cargo", "Cargo"), ("area", "Área"), ("nivel_org", "Nivel"),
-                 ("estado", "Estado"), ("foto", "Foto"), ("fuente", "Fuente"), ("notas", "Notas")),
-            ctx["team"], widths=dict(nombre=24, cargo=30, notas=46))
+                 ("estado", "Estado"), ("salida", "Fecha salida"), ("foto", "Foto"), ("fuente", "Fuente alta"),
+                 ("fuente_cargo", "Fuente cargo"), ("fuente_estado", "Fuente estado"), ("notas", "Notas")),
+            sorted(ctx["team"], key=lambda t: ({"Activo": 0, "Por confirmar": 1, "Ex-equipo": 2}[t["estado"]], t["person_id"])),
+            widths=dict(nombre=24, cargo=34, notas=50), date_cols=("salida",))
 
-    b.sheet("06_Info_Personal", "Información personal",
-            "Cumpleaños, antigüedad y aniversario de staff y creadores. Las columnas con fórmula se recalculan solas.",
-            ctx["personal_cols"], ctx["personal"], widths=dict(nombre=24, notas=40),
-            date_cols=("fecha_ingreso", "proximo_cumple", "proximo_aniversario"))
+    for key_, title, desc, columns, rows in (
+        ("p_staff", "Información personal · staff",
+         "Cumpleaños, edad, antigüedad y aniversario del equipo. Activos primero, ex-equipo al final (sin aniversario).",
+         staff.STAFF_PERSONAL_COLS, ctx["staff_personal"]),
+        ("p_creadores", "Información personal · creadores",
+         "Cumpleaños y antigüedad en MCR (desde la firma). La firma se captura en las celdas amarillas.",
+         staff.CREATOR_PERSONAL_COLS, ctx["creator_personal"]),
+    ):
+        ws = b.sheet(SH[key_], title, desc, [(f, lab) for f, lab, _ in columns], rows,
+                     widths=dict(nombre=24, nombre_real=26, cargo=30, estado=22, notas=36, antiguedad=14))
+        staff.finish_personal_sheet(ws, columns, len(rows))
 
-    b.sheet("07_Creadores", "Creadores · maestra",
+    b.sheet(SH["creadores"], "Creadores · maestra",
             "Una fila por creador. Los valores siguen la jerarquía Interno > Oficial > Externo; la columna fuente_* dice quién ganó.",
             ctx["creator_cols"], ctx["creators"],
             widths=dict(nombre_publico=20, nombre_real=26, estado_roster=26, categorias=24, bio=60, campana_vigente=34,
-                        marcas_frecuentes=40, correo=30),
-            link_cols=("youtube_url", "tiktok_url", "instagram_url", "twitch_url", "x_url"),
-            int_cols=tuple(f"{p}_seguidores" for p in ("youtube", "tiktok", "instagram", "twitch", "x"))
+                        marcas_frecuentes=40, correo=30, notas_internas=40),
+            link_cols=("youtube_url", "tiktok_url", "instagram_url", "twitch_url", "x_url", "kick_url"),
+            int_cols=tuple(f"{p}_seguidores" for p in ("youtube", "tiktok", "instagram", "twitch", "x", "kick"))
             + ("alcance_total", "youtube_promedio_views"),
             pct_cols=("youtube_view_rate_pct",), date_cols=("sin_campana_desde",))
 
-    b.sheet("08_Plataformas", "Creadores × plataforma", "Formato largo para tablas dinámicas.",
+    b.sheet(SH["plataformas"], "Creadores × plataforma", "Formato largo para tablas dinámicas.",
             cols(("creator_id", "creator_id"), ("creador", "Creador"), ("plataforma", "Plataforma"), ("url", "URL"),
                  ("seguidores", "Seguidores"), ("fuente_seguidores", "Fuente seguidores"),
                  ("promedio_views", "Promedio views"), ("fuente_views", "Fuente views"), ("principal", "Principal"),
                  ("fuente_url", "Fuente URL")),
             ctx["platforms"], link_cols=("url",), int_cols=("seguidores", "promedio_views"), widths=dict(url=44))
 
-    b.sheet("09_Audiencia", "Audiencia", "Distribuciones de audiencia disponibles (media kits procesados en la web).",
+    b.sheet(SH["audiencia"], "Audiencia", "Distribuciones de audiencia disponibles (media kits procesados en la web).",
             cols(("creator_id", "creator_id"), ("creador", "Creador"), ("plataforma", "Plataforma"),
                  ("dimension", "Dimensión"), ("valor", "Valor"), ("porcentaje", "%"), ("calidad", "Calidad campo"),
                  ("estado", "Estado registro"), ("origen", "Origen"), ("fuente", "Fuente")),
             ctx["audience"], pct_cols=("porcentaje",))
 
-    b.sheet("10_Campañas_Creador", "Historial de campañas por creador",
+    b.sheet(SH["campanas"], "Historial de campañas por creador",
             "Cada mención de CAMPAÑAS HISTÓRICAS. 'marca' se clasifica por reglas; vacía = sin clasificar.",
             cols(("creator_id", "creator_id"), ("creador", "Creador"), ("campana", "Campaña (texto original)"),
                  ("marca", "Marca / título"), ("empresa_matriz", "Empresa matriz"), ("mes", "Mes"), ("anio", "Año"),
                  ("fuente", "Fuente")),
             ctx["campaigns_creator"], widths=dict(campana=50, marca=26, empresa_matriz=26))
 
-    b.sheet("11_Marcas", "Marcas y clientes", "Marcas del sitio + marcas detectadas en el historial de campañas.",
+    b.sheet(SH["marcas"], "Marcas y clientes", "Marcas del sitio + marcas detectadas en el historial de campañas.",
             cols(("brand_id", "ID"), ("marca", "Marca / título"), ("empresa_matriz", "Empresa matriz"),
                  ("en_web", "Logo en web"), ("exclusiva", "Agencia exclusiva"), ("campanas_n", "Menciones en historial"),
                  ("creadores_n", "Creadores distintos"), ("casos_portafolio", "Casos en portafolio"), ("logo", "Asset logo"),
                  ("fuente_matriz", "Fuente matriz")),
             ctx["brands"], widths=dict(marca=28, empresa_matriz=30, casos_portafolio=36))
 
-    b.sheet("12_Portafolio", "Casos de portafolio", "Casos publicados en la web.",
+    b.sheet(SH["portafolio"], "Casos de portafolio", "Casos publicados en la web.",
             cols(("case_id", "ID"), ("titulo", "Caso"), ("subtitulo", "Subtítulo"), ("cliente", "Cliente"),
                  ("servicios", "Servicios"), ("region", "Región"), ("kpis", "KPIs"), ("descripcion", "Descripción"),
                  ("assets", "Assets"), ("fuente", "Fuente")),
             ctx["cases"], widths=dict(titulo=30, kpis=50, descripcion=70, assets=40), wrap_cols=("kpis", "descripcion"))
 
-    b.sheet("13_Prensa_Premios", "Prensa, premios y presencia",
+    b.sheet(SH["prensa"], "Prensa, premios y presencia",
             "Lo que publica la web (nivel 2) + lo encontrado en investigación (nivel 3).",
             cols(("item_id", "ID"), ("tipo", "Tipo"), ("fecha", "Fecha"), ("titulo", "Título"), ("medio", "Medio / organización"),
                  ("caracter", "Carácter"), ("descripcion", "Descripción"), ("url", "URL"), ("fuente", "Fuente"),
@@ -924,40 +939,45 @@ def write_book(out, ctx):
             ctx["press"], widths=dict(titulo=56, descripcion=46, url=40, caracter=24), link_cols=("url",),
             wrap_cols=("titulo",))
 
-    b.sheet("14_Assets", "Inventario de assets", "Todos los archivos del tema web v2.5.0.",
+    b.sheet(SH["assets"], "Inventario de assets", "Todos los archivos del tema web v2.5.0.",
             cols(("asset_id", "ID"), ("archivo", "Archivo"), ("categoria", "Categoría"), ("entidad", "Entidad vinculada"),
                  ("tipo", "Tipo"), ("kb", "KB"), ("dimensiones", "Dimensiones"), ("usado_en", "Usado en"),
                  ("ruta", "Ruta")),
             ctx["assets"], widths=dict(archivo=34, usado_en=40, ruta=44))
 
-    b.sheet("15_Conflictos", "Conflictos entre fuentes",
+    b.sheet(SH["web"], "Correcciones para la web",
+            "Datos del sitio que el roster interno contradice. Valor correcto = interno (nivel 1).",
+            cols(("creator_id", "creator_id"), ("creador", "Creador"), ("campo", "Campo"), ("en_web", "Hoy en la web"),
+                 ("correcto", "Valor correcto"), ("fuente", "Fuente"), ("diferencia_pct", "Dif. %"), ("severidad", "Severidad")),
+            ctx["web_fixes"], widths=dict(en_web=40, correcto=40), int_cols=("en_web", "correcto"), pct_cols=("diferencia_pct",))
+
+    b.sheet(SH["conflictos"], "Conflictos entre fuentes",
             "Cada valor descartado por la jerarquía. Filtra por severidad para revisar lo importante.",
             cols(("entidad", "Entidad"), ("entidad_id", "ID"), ("campo", "Campo"), ("valor_ganador", "Valor ganador"),
                  ("fuente_ganadora", "Fuente ganadora"), ("nivel_ganador", "Nivel ganador"),
                  ("valor_descartado", "Valor descartado"), ("fuente_descartada", "Fuente descartada"),
-                 ("nivel_descartado", "Nivel descartado"), ("diferencia_pct", "Dif. %"),
-                 ("severidad", "Severidad")),
+                 ("nivel_descartado", "Nivel descartado"), ("diferencia_pct", "Dif. %"), ("severidad", "Severidad")),
             ctx["conflicts"], widths=dict(valor_ganador=36, valor_descartado=36), pct_cols=("diferencia_pct",))
 
-    b.sheet("16_Huecos", "Huecos y pendientes", "Lo que falta o no cuadra, con la acción sugerida.",
-            cols(("area", "Área"), ("entidad", "Entidad"), ("problema", "Problema"), ("detalle", "Detalle"),
-                 ("accion", "Acción")),
-            ctx["gaps"], widths=dict(problema=44, detalle=40, accion=44))
+    b.sheet(SH["pendientes"], "Pendientes", "Lo que falta o no cuadra, por prioridad, con la acción sugerida.",
+            cols(("prioridad", "Prioridad"), ("area", "Área"), ("entidad", "Entidad"), ("problema", "Problema"),
+                 ("detalle", "Detalle"), ("accion", "Acción")),
+            ctx["gaps"], widths=dict(problema=44, detalle=50, accion=44))
 
-    b.sheet("17_Mapeo_IDs", "Mapeo de IDs", "Cómo se llama cada creador en cada fuente y cómo se emparejó.",
+    b.sheet(SH["mapeo"], "Mapeo de IDs", "Cómo se llama cada creador en cada fuente y cómo se emparejó.",
             cols(("creator_id", "creator_id"), ("fuente", "Fuente"), ("nombre_en_fuente", "Nombre en la fuente"),
                  ("metodo", "Método de match"), ("fila", "Fila origen")),
             ctx["mapping"], widths=dict(metodo=44))
 
-    b.sheet("18_Fuentes", "Fuentes", "Registro de fuentes y su nivel en la jerarquía.",
+    b.sheet(SH["fuentes"], "Fuentes", "Registro de fuentes y su nivel en la jerarquía.",
             cols(("id", "ID"), ("nombre", "Fuente"), ("nivel", "Nivel"), ("tipo", "Tipo"), ("ubicacion", "Ubicación"),
                  ("fecha", "Fecha"), ("notas", "Notas")),
             [dict(r, nivel=NIVEL_LABEL[r["nivel"]]) for r in src.rows.values()],
             widths=dict(nombre=44, ubicacion=60, notas=50), link_cols=("ubicacion",), date_cols=("fecha",))
 
     write_summary(res, ctx)
+    staff.protect(res)
     write_index(idx_ws, b, ctx)
-    b.wb.move_sheet("00_Índice", offset=-b.wb.index(b.wb["00_Índice"]))
     b.save(out)
 
 
@@ -967,7 +987,7 @@ def write_summary(ws, ctx):
     ws["A1"].font = Font(bold=True, size=16, color=C_BG)
     ws["A2"] = "Conteos vivos (fórmulas sobre las hojas). Si editas las hojas, esto se actualiza."
     ws["A2"].font = Font(italic=True, size=10, color="6B6480")
-    cr = "'07_Creadores'"
+    cr = f"'{SH['creadores']}'"
     ncol = {f: get_column_letter(i) for i, (f, _) in enumerate(ctx["creator_cols"], 1)}
     rng = lambda f: f"{cr}!${ncol[f]}$5:${ncol[f]}$2000"
     blocks = [
@@ -984,16 +1004,23 @@ def write_summary(ws, ctx):
         ("Por país", [(p, f'=COUNTIF({rng("pais")},"{p}")')
                       for p, _ in Counter(c["pais"] for c in ctx["creators"] if c["pais"]).most_common()]),
         ("Calidad", [
-            ("Conflictos registrados", "=COUNTA('15_Conflictos'!$A$5:$A$5000)"),
-            ("Conflictos severidad alta", "=COUNTIF('15_Conflictos'!$K$5:$K$5000,\"Alta\")"),
-            ("Huecos / pendientes", "=COUNTA('16_Huecos'!$A$5:$A$5000)"),
+            ("Conflictos registrados", f"=COUNTA('{SH['conflictos']}'!$A$5:$A$5000)"),
+            ("Conflictos severidad alta", f"=COUNTIF('{SH['conflictos']}'!$K$5:$K$5000,\"Alta\")"),
+            ("Correcciones para la web", f"=COUNTA('{SH['web']}'!$A$5:$A$5000)"),
+            ("Pendientes · prioridad alta", f"=COUNTIF('{SH['pendientes']}'!$A$5:$A$5000,\"Alta\")"),
+            ("Pendientes · total", f"=COUNTA('{SH['pendientes']}'!$A$5:$A$5000)"),
         ]),
         ("Equipo y otros", [
-            ("Personas en equipo", "=COUNTA('05_Equipo'!$A$5:$A$500)"),
-            ("Marcas", "=COUNTA('11_Marcas'!$A$5:$A$1000)"),
-            ("Casos de portafolio", "=COUNTA('12_Portafolio'!$A$5:$A$500)"),
-            ("Menciones de campañas", "=COUNTA('10_Campañas_Creador'!$A$5:$A$10000)"),
-            ("Assets", "=COUNTA('14_Assets'!$A$5:$A$2000)"),
+            ("Equipo activo", f"=COUNTIF('{SH['equipo']}'!$F$5:$F$500,\"Activo\")"),
+            ("Ex-equipo", f"=COUNTIF('{SH['equipo']}'!$F$5:$F$500,\"Ex-equipo\")"),
+            ("Cumpleaños en los próximos 30 días (staff)",
+             f"=COUNTIFS('{SH['p_staff']}'!$K$5:$K$500,\">=0\",'{SH['p_staff']}'!$K$5:$K$500,\"<=30\")"),
+            ("Cumpleaños en los próximos 30 días (creadores)",
+             f"=COUNTIFS('{SH['p_creadores']}'!$M$5:$M$500,\">=0\",'{SH['p_creadores']}'!$M$5:$M$500,\"<=30\")"),
+            ("Marcas", f"=COUNTA('{SH['marcas']}'!$A$5:$A$1000)"),
+            ("Casos de portafolio", f"=COUNTA('{SH['portafolio']}'!$A$5:$A$500)"),
+            ("Menciones de campañas", f"=COUNTA('{SH['campanas']}'!$A$5:$A$10000)"),
+            ("Assets", f"=COUNTA('{SH['assets']}'!$A$5:$A$2000)"),
         ]),
     ]
     r = 4
@@ -1039,7 +1066,7 @@ def write_index(ws, b, ctx):
     ws.cell(r, 3, "Filas").font = Font(bold=True, color=C_HEADER_FONT)
     for c in range(1, 4):
         ws.cell(r, c).fill = PatternFill("solid", fgColor=C_BG)
-    entries = [("01_Resumen", "Conteos vivos", None)] + b.index
+    entries = [(SH["res"], "Conteos vivos", None)] + b.index
     for name, desc, n in entries:
         r += 1
         c = ws.cell(r, 1, name)
@@ -1065,6 +1092,7 @@ def main():
     ap.add_argument("--theme", required=True, help="carpeta del tema WP descomprimido")
     ap.add_argument("--interno", required=True, help="carpeta con los .xlsx internos")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--previo", help="maestro anterior: conserva lo capturado a mano en las celdas amarillas")
     args = ap.parse_args()
 
     src = Sources()
@@ -1097,6 +1125,26 @@ def main():
 
     master, plats, aud, camps, mapping, gaps = consolidate(theme, internals, birthdays, src, resolver, None)
 
+    # ajustes internos (hojas Staff / Ajustes_Creadores) y maestro previo
+    adj_files = [f for f in files if f not in roster_files and f not in bday_files]
+    staff_raw, adjustments = staff.load_internal_adjustments(adj_files)
+    staff_sources = []
+    for n, (f, rows) in enumerate(staff_raw, 1):
+        sid = src.add(f"S3{n}", f"Staff interno · {os.path.basename(f)}", 1, "Excel interno", os.path.basename(f),
+                      dt.date.fromtimestamp(os.path.getmtime(f)), "Altas, bajas, cumpleaños e ingreso del equipo.")
+        staff_sources.append((sid, rows))
+    for f in sorted({a["fuente"] for a in adjustments}):
+        src.add("S39", f"Ajustes internos de creadores · {f}", 1, "Excel interno", f,
+                dt.date.fromtimestamp(os.path.getmtime(os.path.join(args.interno, f))), None)
+    prev_staff, prev_creators = staff.load_previous_master(args.previo)
+    if args.previo:
+        src.add("S40", "Captura manual en el maestro previo", 1, "Excel maestro", os.path.basename(args.previo),
+                dt.date.fromtimestamp(os.path.getmtime(args.previo)), "Celdas amarillas de las hojas de información personal.")
+
+    apply_creator_adjustments(master, adjustments, resolver, gaps)
+    fix_platform_labels(master, plats, gaps)
+    flag_suspicious_counts(master, gaps)
+
     # equipo
     team_raw = load_team(args.theme)
     team = []
@@ -1104,28 +1152,41 @@ def main():
     for i, t in enumerate(team_raw, 1):
         used_photos.add(t["foto"])
         team.append(dict(person_id=f"P{i:03d}", nombre=t["nombre"], cargo=t["cargo"], area=role_area(t["cargo"]),
-                         nivel_org=t["nivel"], estado="Activo (según web)", foto=t["foto"], fuente="S04",
+                         nivel_org=t["nivel"], estado="Activo", foto=t["foto"], fuente="S04",
                          notas=None if t["foto"] else "Sin foto en la web"))
     all_team_photos = sorted(os.path.basename(f) for f in glob.glob(os.path.join(args.theme, "assets/img/TEAM_*")))
     for ph in all_team_photos:
         if ph not in used_photos:
             nm = ph.replace("TEAM_", "").rsplit(".", 1)[0].title()
             team.append(dict(person_id=f"P{len(team) + 1:03d}", nombre=nm, cargo=None, area=None, nivel_org=None,
-                             estado="Por confirmar (foto sin uso)", foto=ph, fuente="S04",
-                             notas="Foto existe en assets pero no aparece en la página Nosotros: ¿ex-equipo?"))
-            gaps.append(dict(area="Equipo", entidad=nm, problema="Foto de equipo sin persona publicada",
-                             detalle=ph, accion="Confirmar si es ex-equipo o falta en la web"))
+                             estado=None, foto=ph, fuente="S04",
+                             notas="Foto existe en assets pero no aparece en la página Nosotros"))
+    team = staff.merge_staff(team, staff_sources, prev_staff, src, resolver, role_area)
     for t in team:
+        if t["estado"] == "Por confirmar":
+            gaps.append(dict(area="Equipo", entidad=t["nombre"], problema="Estado por confirmar", detalle=t.get("foto"),
+                             accion="Confirmar si sigue en MCR"))
+        if t["estado"] == "Ex-equipo" and t.get("foto"):
+            gaps.append(dict(area="Web", entidad=t["nombre"], problema="Foto de ex-equipo sigue en los assets del tema",
+                             detalle=t["foto"], accion="Borrarla en la próxima versión del tema"))
+        if t["estado"] == "Ex-equipo":
+            continue
         if not t["foto"]:
-            gaps.append(dict(area="Equipo", entidad=t["nombre"], problema="Sin foto en la web", detalle=t["cargo"],
-                             accion="Producir foto"))
-    for t in team:
-        if not t.get("fecha_ingreso") or not t.get("cumple_dia"):
-            gaps.append(dict(area="Info personal", entidad=t["nombre"], problema="Staff sin cumpleaños o fecha de ingreso",
-                             detalle=t["cargo"], accion="Subir archivo interno de RR. HH. / staff"))
+            gaps.append(dict(area="Equipo", entidad=t["nombre"], problema="Sin foto de equipo",
+                             detalle=t["cargo"], accion="Producir foto (Kevin Moss)"))
+        if t["fuente"] != "S04":
+            gaps.append(dict(area="Web", entidad=t["nombre"], problema="Está en el equipo interno pero no en la web",
+                             detalle=t["cargo"], accion="Agregarlo a la página Nosotros"))
+        missing = [lab for f, lab in (("cumple_dia", "cumpleaños"), ("ing_anio", "fecha de ingreso")) if not t.get(f)]
+        if missing:
+            gaps.append(dict(area="Info personal", entidad=t["nombre"], problema="Staff sin " + " ni ".join(missing),
+                             detalle=t["cargo"], accion="Plantilla RH"))
+        elif not t.get("ing_mes"):
+            gaps.append(dict(area="Info personal", entidad=t["nombre"], problema="Ingreso sólo con año",
+                             detalle=f"{t['ing_anio']}", accion="Plantilla RH: mes y día para calcular el aniversario"))
 
-    # info personal
-    personal_cols, personal = build_personal(team, master)
+    staff_rows = staff.staff_personal_rows(team)
+    creator_personal = staff.creator_personal_rows(master, prev_creators)
 
     # marcas
     cases = load_portfolio(args.theme)
@@ -1159,19 +1220,33 @@ def main():
         a["entidad"] = (creator_by_asset.get(a["archivo"]) or team_by_asset.get(a["archivo"])
                         or brand_by_asset.get(a["archivo"]) or case_by_asset.get(a["archivo"]))
 
+    add_conflict_gaps(resolver.conflicts, gaps)
+    unclassified = sum(1 for c in camps if not c["marca"])
+    if unclassified:
+        gaps.append(dict(area="Campañas", entidad=f"{unclassified} menciones", problema="Campañas sin marca clasificada",
+                         detalle="Ver 11_Campañas_Creador con filtro Marca vacía", accion="Asignar marca o ampliar reglas"))
     gaps = dedupe_gaps(gaps)
+    for g in gaps:
+        g["prioridad"] = gap_priority(g)
+    gaps.sort(key=lambda g: ({"Alta": 0, "Media": 1, "Baja": 2}[g["prioridad"]], g["area"], str(g["entidad"])))
+    staff.write_rh_template(os.path.join(os.path.dirname(os.path.abspath(args.out)), "PLANTILLA_RH_STAFF.xlsx"),
+                            team, VERSION)
     ctx = dict(
         src=src, agency=research.agency_rows(src), figures=research.figures(src), timeline=research.timeline(src),
-        team=team, personal_cols=personal_cols, personal=personal, creators=master, creator_cols=CREATOR_COLS,
+        team=team, staff_personal=staff_rows, creator_personal=creator_personal, creators=master, creator_cols=CREATOR_COLS,
+        web_fixes=web_corrections(resolver.conflicts, master),
         platforms=plats, audience=aud, campaigns_creator=camps, brands=brands, cases=case_rows, press=press,
         assets=assets, conflicts=resolver.conflicts, gaps=gaps, mapping=mapping,
         notes=[
             "Datos personales (nombres reales, teléfonos, cumpleaños): no subir este archivo a repositorios ni carpetas públicas.",
             "Los tokens de acceso de los perfiles privados del tema NO se incluyen: son la llave de páginas noindex.",
-            "Conteos de seguidores del roster interno vienen escritos a mano; los formatos ambiguos se listan en 16_Huecos.",
+            "Conteos de seguidores del roster interno vienen escritos a mano; se normalizan y los dudosos van a 18_Pendientes.",
+            "Hojas de información personal: amarillo = captura, morado = fórmula bloqueada. Protegidas sin contraseña.",
+            "Lo capturado a mano en celdas amarillas se conserva al regenerar (opción --previo).",
+            "Staff: PLANTILLA_RH_STAFF.xlsx va a RR. HH.; al regresar llena se deja en la carpeta interna y entra como nivel 1.",
             "Promedio de views, bio, tier y audiencia sólo existen en la web (nivel 2), así que se toman de ahí.",
             "Empresa matriz de cada marca es referencia general (nivel 3): verificar antes de usar en un pitch.",
-            "Para actualizar: correr tools/build_master.py con las fuentes nuevas; no editar a mano las hojas derivadas.",
+            "Para actualizar: correr tools/build_master.py con las fuentes nuevas; fuera de las celdas amarillas no se edita a mano.",
         ])
     write_book(args.out, ctx)
     print(f"OK · {args.out}")
@@ -1209,7 +1284,8 @@ CREATOR_COLS = [
     ("campana_vigente", "Campaña vigente / última"), ("sin_campana_desde", "Sin campaña desde"),
     ("campanas_historicas_n", "Campañas históricas"), ("marcas_frecuentes", "Marcas frecuentes"),
     ("youtube_url", "URL YouTube"), ("tiktok_url", "URL TikTok"), ("instagram_url", "URL Instagram"),
-    ("twitch_url", "URL Twitch"), ("x_url", "URL X"), ("bio", "Bio (web)"), ("retrato", "Retrato"),
+    ("twitch_url", "URL Twitch"), ("x_url", "URL X"), ("kick_url", "URL Kick"), ("kick_seguidores", "Kick"),
+    ("nombre_compartido", "Nombre real compartido"), ("notas_internas", "Notas internas"), ("bio", "Bio (web)"), ("retrato", "Retrato"),
     ("audiencia_estado", "Audiencia"), ("media_kit", "Media kit"), ("stream", "Stream en"),
     ("categorias_web", "Categorías (web)"), ("fuente_nombre", "Fuente nombre"), ("fuente_pais", "Fuente país"),
     ("fuente_categorias", "Fuente categorías"), ("fuente_correo", "Fuente correo"),
@@ -1217,36 +1293,95 @@ CREATOR_COLS = [
 ]
 
 
-def build_personal(team, creators):
-    columns = [("persona_id", "ID"), ("tipo", "Tipo"), ("nombre", "Nombre"), ("nombre_real", "Nombre real"),
-               ("rol", "Cargo / tier"), ("pais", "País"), ("dia", "Día"), ("mes", "Mes"), ("cumple", "Cumpleaños"),
-               ("proximo_cumple", "Próximo cumpleaños"), ("dias_cumple", "Días para cumple"),
-               ("fecha_ingreso", "Fecha ingreso"), ("antiguedad", "Antigüedad"),
-               ("proximo_aniversario", "Próximo aniversario"), ("dias_aniversario", "Días para aniversario"),
-               ("fuente_cumple", "Fuente cumple"), ("fuente_ingreso", "Fuente ingreso"), ("notas", "Notas")]
+def apply_creator_adjustments(master, adjustments, resolver, gaps):
+    """Ajustes internos (hoja Ajustes_Creadores): nivel 1, se aplican al final."""
+    by_id = {m["creator_id"]: m for m in master}
+    for a in adjustments:
+        m = by_id.get(a["creator_id"])
+        campo = str(a["campo"] or "").strip()
+        if not m:
+            gaps.append(dict(area="Ajustes", entidad=a["creator_id"], problema="Ajuste para un creator_id que no existe",
+                             detalle=f"{campo} = {a['valor']}", accion="Revisar el ID en Ajustes_Creadores"))
+            continue
+        if campo == "nombre_real_compartido":
+            m["nombre_compartido"] = "Sí"
+        elif campo == "nota":
+            m["notas_internas"] = "; ".join(filter(None, [m.get("notas_internas"), str(a["valor"])]))
+            continue
+        else:
+            old = m.get(campo)
+            if old not in (None, "") and str(old) != str(a["valor"]):
+                resolver.conflicts.append(dict(entidad="Creador", entidad_id=m["creator_id"], campo=campo,
+                                               valor_ganador=a["valor"], fuente_ganadora="S39", nivel_ganador=NIVEL_LABEL[1],
+                                               valor_descartado=old, fuente_descartada="(consolidado)",
+                                               nivel_descartado="—", diferencia_pct=None, severidad="Revisar"))
+            m[campo] = a["valor"]
+        if a.get("motivo"):
+            m["notas_internas"] = "; ".join(filter(None, [m.get("notas_internas"), str(a["motivo"])]))
+    shared = {m["creator_id"] for m in master if m.get("nombre_compartido") == "Sí"}
+    gaps[:] = [g for g in gaps if not (g["problema"] == "Mismo nombre real en varios creadores"
+                                       and set(str(g["entidad"]).split(", ")) <= shared)]
+
+
+def fix_platform_labels(master, plats, gaps):
+    """URLs de Kick capturadas en la columna de Twitch."""
+    for m in master:
+        url = m.get("twitch_url") or ""
+        if "kick.com" in url.lower():
+            m["kick_url"], m["kick_seguidores"] = url, m.get("twitch_seguidores")
+            m["twitch_url"], m["twitch_seguidores"] = None, None
+            for p in plats:
+                if p["creator_id"] == m["creator_id"] and p["plataforma"] == "twitch":
+                    p["plataforma"] = "kick"
+            gaps.append(dict(area="Creadores", entidad=m["creator_id"], problema="URL de Kick en la columna Twitch",
+                             detalle=url, accion="Reclasificado como Kick; mover a su columna en CREADORES_INTERNOS"))
+
+
+def flag_suspicious_counts(master, gaps):
+    for m in master:
+        vals = {p: m.get(f"{p}_seguidores") for p in ("youtube", "tiktok", "instagram", "twitch", "x", "kick")}
+        top = max([v for v in vals.values() if v] or [0])
+        for p, v in vals.items():
+            if v is not None and v < 1000 and top >= 100_000:
+                gaps.append(dict(area="Seguidores", entidad=m["creator_id"], problema=f"Cifra sospechosa en {p}",
+                                 detalle=f"{v:,} vs {top:,} en su plataforma principal",
+                                 accion="Confirmar: ¿cuenta correcta o dato mal capturado?"))
+
+
+def web_corrections(conflicts, master):
+    names = {m["creator_id"]: m["nombre_publico"] for m in master}
     rows = []
-    for t in team:
-        rows.append(dict(persona_id=t["person_id"], tipo="Staff", nombre=t["nombre"], nombre_real=t["nombre"],
-                         rol=t["cargo"], pais=None, dia=t.get("cumple_dia"), mes=t.get("cumple_mes"),
-                         fecha_ingreso=t.get("fecha_ingreso"), fuente_cumple=t.get("fuente_cumple"),
-                         fuente_ingreso=t.get("fuente_ingreso"), notas=t.get("notas_personal")))
-    for c in creators:
-        rows.append(dict(persona_id=c["creator_id"], tipo="Creador", nombre=c["nombre_publico"],
-                         nombre_real=c["nombre_real"], rol=c["tier"], pais=c["pais"], dia=c["cumple_dia"],
-                         mes=c["cumple_mes"], fecha_ingreso=None, fuente_cumple="S02" if c["cumple_dia"] else None,
-                         fuente_ingreso=None, notas=None))
-    # fórmulas (fila real = índice + 5; columnas fijas por posición)
-    L = {f: get_column_letter(i) for i, (f, _) in enumerate(columns, 1)}
-    for i, r in enumerate(rows):
-        n = i + 5
-        d, m, fi = f"{L['dia']}{n}", f"{L['mes']}{n}", f"{L['fecha_ingreso']}{n}"
-        r["cumple"] = (f'=IF(OR({d}="",{m}=""),"",TEXT(DATE(2000,{m},{d}),"dd mmm"))')
-        r["proximo_cumple"] = (f'=IF(OR({d}="",{m}=""),"",DATE(YEAR(TODAY())+IF(DATE(YEAR(TODAY()),{m},{d})<TODAY(),1,0),{m},{d}))')
-        r["dias_cumple"] = f'=IF({L["proximo_cumple"]}{n}="","",{L["proximo_cumple"]}{n}-TODAY())'
-        r["antiguedad"] = (f'=IF({fi}="","",DATEDIF({fi},TODAY(),"y")&" a "&DATEDIF({fi},TODAY(),"ym")&" m")')
-        r["proximo_aniversario"] = (f'=IF({fi}="","",DATE(YEAR(TODAY())+IF(DATE(YEAR(TODAY()),MONTH({fi}),DAY({fi}))<TODAY(),1,0),MONTH({fi}),DAY({fi})))')
-        r["dias_aniversario"] = f'=IF({L["proximo_aniversario"]}{n}="","",{L["proximo_aniversario"]}{n}-TODAY())'
-    return columns, rows
+    for c in conflicts:
+        if c["entidad"] != "Creador" or c["fuente_descartada"] != "S03" or not str(c["fuente_ganadora"]).startswith("S01"):
+            continue
+        rows.append(dict(creator_id=c["entidad_id"], creador=names.get(c["entidad_id"]), campo=c["campo"],
+                         en_web=c["valor_descartado"], correcto=c["valor_ganador"], fuente=c["fuente_ganadora"],
+                         diferencia_pct=c["diferencia_pct"], severidad=c["severidad"]))
+    order = {"Alta": 0, "Revisar": 1, "Media": 2, "Baja": 3}
+    return sorted(rows, key=lambda r: (order.get(r["severidad"], 9), r["creator_id"]))
+
+
+def add_conflict_gaps(conflicts, gaps):
+    for c in conflicts:
+        if c["entidad"] != "Creador":
+            continue
+        if c["campo"].endswith("url"):
+            gaps.append(dict(area="Cuentas", entidad=c["entidad_id"], problema=f"Cuenta distinta en {c['campo'].split(' ')[0]}",
+                             detalle=f"interno: {c['valor_ganador']} · web: {c['valor_descartado']}",
+                             accion="Confirmar cuál es la cuenta vigente"))
+        elif c["campo"] == "nombre público":
+            gaps.append(dict(area="Creadores", entidad=c["entidad_id"], problema="Nombre público distinto entre fuentes",
+                             detalle=f"interno: {c['valor_ganador']} · web: {c['valor_descartado']}",
+                             accion="Confirmar el nombre oficial (gana el interno por jerarquía)"))
+
+
+def gap_priority(g):
+    p = g["problema"]
+    if g["area"] in ("Roster", "Cuentas") or p.startswith("Cifra sospechosa") or "Ajuste para" in p:
+        return "Alta"
+    if g["area"] in ("Assets", "Web", "Campañas") or p in ("Sin foto de equipo",):
+        return "Baja"
+    return "Media"
 
 
 def build_brands(theme_dir, camps, cases):
